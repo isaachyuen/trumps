@@ -1,0 +1,92 @@
+.overlay {
+  position: fixed;
+  inset: 0;
+  background: rgba(0,0,0,0.65);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  z-index: 200;
+}
+
+.modal {
+  background: #1e5c34;
+  border-radius: 12px;
+  padding: 2rem;
+  min-width: 300px;
+  max-width: 380px;
+  width: 90%;
+  border: 1px solid rgba(255,255,255,0.15);
+  display: flex;
+  flex-direction: column;
+  gap: 0.9rem;
+}
+
+.modal h2 { text-align: center; font-size: 1.3rem; }
+
+.trumpDisplay {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 0.5rem;
+  font-size: 1rem;
+}
+
+.trumpLabel { color: rgba(255,255,255,0.5); font-size: 0.85rem; }
+.trumpSuit { font-size: 1.1rem; font-weight: 700; }
+
+.result {
+  text-align: center;
+  padding: 0.5rem;
+  border-radius: 8px;
+  font-size: 0.95rem;
+  font-weight: 600;
+}
+
+.made { background: rgba(46,204,113,0.2); color: #2ecc71; }
+.failed { background: rgba(231,76,60,0.2); color: #e74c3c; }
+
+.winnerBanner {
+  text-align: center;
+  font-size: 1.1rem;
+  font-weight: 800;
+  color: #f1c40f;
+}
+
+.winsDisplay {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 1.5rem;
+  background: rgba(0,0,0,0.2);
+  border-radius: 8px;
+  padding: 0.75rem;
+}
+
+.winTeam { display: flex; flex-direction: column; align-items: center; gap: 0.2rem; }
+.teamLabel { font-size: 0.75rem; color: rgba(255,255,255,0.5); font-weight: 700; }
+.winCount { font-size: 1.4rem; font-weight: 800; }
+.vs { color: rgba(255,255,255,0.4); font-size: 0.85rem; }
+
+.trickBreakdown {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 0.3rem 1rem;
+  font-size: 0.85rem;
+  color: #a8d5b5;
+}
+
+.trickRow { display: flex; justify-content: space-between; }
+
+.next { text-align: center; font-size: 0.8rem; color: rgba(255,255,255,0.5); }
+
+.btn {
+  background: #2ecc71;
+  color: #fff;
+  border: none;
+  border-radius: 8px;
+  padding: 0.7rem;
+  font-size: 0.95rem;
+  font-weight: 700;
+  width: 100%;
+}
+.btn:hover { background: #27ae60; }

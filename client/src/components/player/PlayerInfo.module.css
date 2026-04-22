@@ -1,0 +1,48 @@
+.info {
+  background: rgba(0,0,0,0.35);
+  border-radius: 8px;
+  padding: 0.5rem 0.75rem;
+  text-align: center;
+  border: 2px solid transparent;
+  min-width: 110px;
+  transition: border-color 0.2s;
+}
+
+.active {
+  border-color: #f1c40f;
+  box-shadow: 0 0 12px rgba(241,196,15,0.4);
+}
+
+.me { border-color: #2ecc71; }
+.me.active { border-color: #f1c40f; }
+
+.name {
+  font-weight: 600;
+  font-size: 0.9rem;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  max-width: 120px;
+}
+
+.stats {
+  display: flex;
+  gap: 0.5rem;
+  justify-content: center;
+  margin-top: 0.2rem;
+  flex-wrap: wrap;
+}
+
+.stat {
+  font-size: 0.75rem;
+  color: #a8d5b5;
+}
+
+.disconnected {
+  font-size: 0.7rem;
+  color: #e74c3c;
+  margin-top: 0.2rem;
+}
+
+.empty { opacity: 0.3; }
+.emptySlot { font-size: 0.85rem; padding: 0.4rem 0.75rem; }

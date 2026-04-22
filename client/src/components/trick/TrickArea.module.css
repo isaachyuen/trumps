@@ -1,0 +1,33 @@
+.area {
+  width: 200px;
+  height: 180px;
+  position: relative;
+}
+
+.slot {
+  position: absolute;
+}
+
+.top {
+  top: 0;
+  left: 50%;
+  transform: translateX(-50%);
+}
+
+.bottom {
+  bottom: 0;
+  left: 50%;
+  transform: translateX(-50%);
+}
+
+.left {
+  left: 0;
+  top: 50%;
+  transform: translateY(-50%);
+}
+
+.right {
+  right: 0;
+  top: 50%;
+  transform: translateY(-50%);
+}
