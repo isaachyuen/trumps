@@ -27,17 +27,19 @@ export default function LobbyPage() {
   }, [gameOptions?.handsPerGame, gameOptions?.betPerGame])
 
   useEffect(() => {
-    socket.on('highCardDraw', payload => {
+    const onHighCardDraw = payload => {
       dispatch({ type: 'HIGH_CARD_DRAW', payload })
       navigate(`/game/${roomCode}`)
-    })
-    socket.on('gameStarted', payload => {
+    }
+    const onGameStarted = payload => {
       dispatch({ type: 'GAME_STARTED', payload })
       navigate(`/game/${roomCode}`)
-    })
+    }
+    socket.on('highCardDraw', onHighCardDraw)
+    socket.on('gameStarted', onGameStarted)
     return () => {
-      socket.off('highCardDraw')
-      socket.off('gameStarted')
+      socket.off('highCardDraw', onHighCardDraw)
+      socket.off('gameStarted', onGameStarted)
     }
   }, [roomCode])
 

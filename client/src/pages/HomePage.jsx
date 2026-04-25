@@ -33,7 +33,7 @@ export default function HomePage() {
       setLoading(false)
       if (res.error) { setError(res.error); return }
       dispatch({ type: 'ROOM_CREATED', payload: { roomCode: res.roomCode, playerId: res.playerId, roomState: null } })
-      sessionStorage.setItem('spades_name', createName.trim())
+      sessionStorage.setItem('trumps_name', createName.trim())
       navigate(`/lobby/${res.roomCode}`)
     })
   }
@@ -48,7 +48,7 @@ export default function HomePage() {
       setLoading(false)
       if (res.error) { setError(res.error); return }
       dispatch({ type: 'ROOM_JOINED', payload: { roomCode: res.roomCode, playerId: res.playerId, roomState: res.roomState } })
-      sessionStorage.setItem('spades_name', joinName.trim())
+      sessionStorage.setItem('trumps_name', joinName.trim())
       if (res.reconnected) {
         navigate(`/game/${res.roomCode}`)
       } else {
@@ -59,7 +59,7 @@ export default function HomePage() {
 
   return (
     <div className={styles.page}>
-      <h1 className={styles.title}>♠ Spades</h1>
+      <h1 className={styles.title}>Trumps</h1>
       <p className={styles.subtitle}>Multiplayer card game for 4 players</p>
 
       {error && <div className={styles.error}>{error}</div>}
