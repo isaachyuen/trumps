@@ -63,8 +63,7 @@
   display: flex;
   flex-direction: column;
   align-items: center;
-  justify-content: flex-end;
-  padding-bottom: 0.75rem;
+  justify-content: center;
   gap: 0.4rem;
 }
 
@@ -86,6 +85,7 @@
 
 .facedownHandVertical > * {
   margin-top: -30px;
+  transform: rotate(90deg);
 }
 .facedownHandVertical > *:first-child { margin-top: 0; }
 

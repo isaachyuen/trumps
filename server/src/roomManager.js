@@ -125,6 +125,8 @@ function publicGame(game) {
     highestBid: game.highestBid,
     highestBidder: game.highestBidder,
     bids: game.bids,
+    bidOrder: game.bidOrder,
+    dealerSeat: game.dealerSeat,
     tricksWon: game.tricksWon,
     currentTrick: game.currentTrick,
     roundNumber: game.roundNumber,

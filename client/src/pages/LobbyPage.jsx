@@ -3,6 +3,7 @@ import { useNavigate, useParams } from 'react-router-dom'
 import { socket } from '../socket'
 import { useGame } from '../context/GameContext'
 import styles from './LobbyPage.module.css'
+import { version } from '../../package.json'
 
 const SEAT_LABELS = { N: 'North', S: 'South', E: 'East', W: 'West' }
 const TEAM_LABEL = { N: 'Team NS', S: 'Team NS', E: 'Team EW', W: 'Team EW' }
@@ -160,6 +161,8 @@ export default function LobbyPage() {
       ) : (
         <p className={styles.waiting}>Waiting for host to start…</p>
       )}
+
+      <p className={styles.version}>v{version}</p>
     </div>
   )
 }
