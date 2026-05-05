@@ -18,6 +18,7 @@
   --card-w: 80px;
   --card-h: 112px;
   --radius: 8px;
+  --south-hand-bottom: 42px;
 
   --seat-active: oklch(0.78 0.13 85);
 
@@ -134,39 +135,21 @@ body { background: var(--bg); color: var(--ink); }
 .stage {
   position: relative;
   overflow: hidden;
+  background:
+    radial-gradient(ellipse at 50% 45%, oklch(0.49 0.08 150) 0%, var(--felt) 58%, var(--felt-rim) 100%);
 }
 .felt {
   position: absolute;
   inset: 0;
-  display: grid;
-  place-items: center;
+  display: none;
   background:
-    radial-gradient(ellipse at 50% 50%, transparent 0%, var(--bg) 75%),
-    var(--bg);
+    radial-gradient(ellipse at 50% 45%, oklch(0.49 0.08 150) 0%, var(--felt) 58%, var(--felt-rim) 100%);
 }
 .felt-disc {
-  position: relative;
-  width: min(78vh, 78vw, 880px);
-  aspect-ratio: 1 / 1;
-  border-radius: 50%;
-  background:
-    radial-gradient(circle at 50% 40%, oklch(0.49 0.08 150) 0%, var(--felt) 55%, var(--felt-rim) 100%);
-  box-shadow:
-    inset 0 0 0 1px oklch(0.35 0.08 150 / 0.6),
-    inset 0 0 0 8px var(--felt),
-    inset 0 0 0 9px oklch(0.5 0.08 150 / 0.4),
-    inset 0 0 0 10px var(--felt),
-    inset 0 0 0 12px var(--felt-rim),
-    0 30px 60px -20px var(--felt-shadow),
-    0 6px 18px -8px var(--felt-shadow);
+  display: none;
 }
 .felt-disc::after {
-  content: '';
-  position: absolute;
-  inset: 24px;
-  border-radius: 50%;
-  border: 1px dashed oklch(0.55 0.08 150 / 0.35);
-  pointer-events: none;
+  content: none;
 }
 
 /* center info */
@@ -308,7 +291,7 @@ body { background: var(--bg); color: var(--ink); }
 .player-hand-zone {
   position: absolute;
   left: 0; right: 0;
-  bottom: 0;
+  bottom: var(--south-hand-bottom);
   height: calc(var(--card-h) + 80px);
   display: grid;
   place-items: end center;
@@ -326,6 +309,7 @@ body { background: var(--bg); color: var(--ink); }
   bottom: 0;
   width: var(--card-w);
   height: var(--card-h);
+  transform: translateX(var(--fan-x, 0px)) translateY(calc(var(--fan-y, 0px) + var(--discard-lift, 0px))) rotate(var(--fan-angle, 0deg));
   transition:
     transform 0.25s cubic-bezier(0.2, 0.8, 0.2, 1),
     box-shadow 0.2s,
@@ -579,9 +563,9 @@ body { background: var(--bg); color: var(--ink); }
 /* ---------- TRICK AREA ---------- */
 .trick-zone {
   position: absolute;
-  left: 50%; top: 50%;
+  left: 50%; top: 44%;
   transform: translate(-50%, -50%);
-  width: 320px;
+  width: 340px;
   height: 320px;
   pointer-events: none;
   z-index: 2;
@@ -590,13 +574,13 @@ body { background: var(--bg); color: var(--ink); }
   position: absolute;
   width: var(--card-w);
   height: var(--card-h);
-  transition: all 0.75s cubic-bezier(0.2, 0.8, 0.2, 1);
+  transition: all 1.25s cubic-bezier(0.2, 0.8, 0.2, 1);
   filter: drop-shadow(0 6px 14px rgba(0,0,0,0.3));
 }
-.trick-card.south { left: 50%; bottom: 8px;  transform: translate(-50%, 0) rotate(-2deg); }
-.trick-card.north { left: 50%; top: 8px;     transform: translate(-50%, 0) rotate(2deg); }
-.trick-card.west  { left: 8px;  top: 50%;    transform: translate(0, -50%) rotate(-92deg); }
-.trick-card.east  { right: 8px; top: 50%;    transform: translate(0, -50%) rotate(92deg); }
+.trick-card.south { left: 50%; bottom: 28px; transform: translate(-50%, 0) rotate(-2deg); }
+.trick-card.north { left: 50%; top: 12px;    transform: translate(-50%, 0) rotate(2deg); }
+.trick-card.west  { left: 10px; top: 50%;    transform: translate(0, -50%) rotate(-92deg); }
+.trick-card.east  { right: 10px; top: 50%;   transform: translate(0, -50%) rotate(92deg); }
 
 .trick-card.collecting.south { transform: translate(-50%, 200vh) rotate(-2deg); opacity: 0; }
 .trick-card.collecting.north { transform: translate(-50%, -200vh) rotate(2deg); opacity: 0; }
@@ -1018,7 +1002,7 @@ body { background: var(--bg); color: var(--ink); }
 .trump-picker {
   position: absolute;
   left: 50%;
-  bottom: calc(var(--card-h) + 110px);
+  bottom: calc(var(--card-h) + 190px);
   transform: translateX(-50%);
   width: min(420px, 92vw);
   z-index: 12;
@@ -1288,7 +1272,7 @@ body { background: var(--bg); color: var(--ink); }
 .kitty-panel {
   position: absolute;
   left: 50%;
-  bottom: calc(var(--card-h) + 110px);
+  bottom: calc(var(--card-h) + 190px);
   transform: translateX(-50%);
   background: var(--paper);
   border: 1px solid var(--line);
@@ -1432,6 +1416,10 @@ body { background: var(--bg); color: var(--ink); }
 }
 
 @media (max-width: 600px) {
+  .trump-picker,
+  .kitty-panel {
+    bottom: calc(var(--card-h) + 130px);
+  }
   .kp-body { grid-template-columns: 1fr; }
   .kp-counter { border-right: none; border-bottom: 1px solid var(--line); padding: 0 0 8px; align-items: flex-start; }
   .kitty-stack { top: calc(50% - 90px); }
@@ -1533,13 +1521,12 @@ body { background: var(--bg); color: var(--ink); }
 
 /* ---------- RESPONSIVE ---------- */
 @media (max-width: 900px) {
-  :root { --card-w: 60px; --card-h: 84px; }
+  :root { --card-w: 60px; --card-h: 84px; --south-hand-bottom: 34px; }
   .hud, .score-card { font-size: 11px; min-width: 0; padding: 10px 12px; }
   .hud { left: 10px; top: 10px; }
   .score-card { right: 10px; top: 10px; min-width: 160px; }
   .avatar { width: 44px; height: 44px; font-size: 14px; }
   .player-name { font-size: 11px; padding: 3px 8px; }
-  .felt-disc { width: min(82vw, 82vh); }
   .opp-hand.north { top: 70px; }
   .opp-hand.west { left: 70px; }
   .opp-hand.east { right: 70px; }
@@ -1550,7 +1537,7 @@ body { background: var(--bg); color: var(--ink); }
   }
 }
 @media (max-width: 600px) {
-  :root { --card-w: 48px; --card-h: 68px; }
+  :root { --card-w: 48px; --card-h: 68px; --south-hand-bottom: 28px; }
   .topbar { padding: 10px 14px; }
   .topbar-meta { gap: 10px; font-size: 11px; }
   .brand small { display: none; }

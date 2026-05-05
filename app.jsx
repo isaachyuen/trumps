@@ -9,7 +9,8 @@ const TWEAK_DEFAULTS = /*EDITMODE-BEGIN*/{
 }/*EDITMODE-END*/;
 
 const TURN_TIME_MS = 12000;
-const POST_TRICK_MS = 1100;
+const POST_TRICK_MS = 1700;
+const PRE_COLLECT_MS = 1300;
 const REVEAL_MS = 2200;
 const DEAL_MS = 1900;
 const BOT_DELAY = [550, 950];
@@ -71,10 +72,11 @@ function App() {
   const turnRef = useRef(turn);
   turnRef.current = turn;
 
-  const hand = hands?.S || [];
+  const currentHigh = bids.filter(b => !b.pass).slice(-1)[0] || null;
+  const lowSortActive = contract?.mode === 'low' || currentHigh?.mode === 'low';
+  const hand = sortHand(hands?.S || [], lowSortActive);
   const isMyTurn = phase === 'play' && turn === 'S' && !collecting;
   const legalIds = isMyTurn && hands ? legalCards(hand, trickPlays) : [];
-  const currentHigh = bids.filter(b => !b.pass).slice(-1)[0] || null;
 
   // Apply theme attrs
   useEffect(() => {
@@ -248,7 +250,7 @@ function App() {
     const t1 = setTimeout(() => {
       setCollecting(true);
       setCollectingSeat(winner);
-    }, 700);
+    }, PRE_COLLECT_MS);
     const t2 = setTimeout(() => {
       setTricksWon(tw => ({ ...tw, [winner]: tw[winner] + 1 }));
       setTrickPlays([]);
@@ -257,7 +259,7 @@ function App() {
       setTurn(winner);
       setTurnStart(Date.now());
       setToast(null);
-    }, 700 + POST_TRICK_MS);
+    }, PRE_COLLECT_MS + POST_TRICK_MS);
     return () => { clearTimeout(t1); clearTimeout(t2); };
   }, [trickPlays, trump, phase, contract]);
 
@@ -367,7 +369,7 @@ function App() {
 
     if (contract.declarer === 'S') {
       // Add kitty to my hand for visual selection
-      setHands(h => ({ ...h, S: sortHand([...h.S, ...kitty]) }));
+      setHands(h => ({ ...h, S: sortHand([...h.S, ...kitty], contract.mode === 'low') }));
       // wait for human discards
       return;
     }
@@ -383,7 +385,7 @@ function App() {
       });
       const discards = sorted.slice(0, 4).map(c => c.id);
       const remaining = combined.filter(c => !discards.includes(c.id));
-      setHands(h => ({ ...h, [contract.declarer]: sortHand(remaining) }));
+      setHands(h => ({ ...h, [contract.declarer]: sortHand(remaining, contract.mode === 'low') }));
       setToast(`${SEAT_NAMES[contract.declarer]} took the kitty`);
       setTimeout(() => setToast(null), 1400);
       setTurn(contract.declarer);
@@ -705,15 +707,7 @@ function CenterBadge({ phase, trump, contract, currentHigh }) {
       </div>
     );
   }
-  if (!trump) return null;
-  const isRed = trump === '♥' || trump === '♦';
-  return (
-    <div className="center-disc">
-      <div className="label">Trumps</div>
-      <div className={`suit ${isRed?'red':''}`}>{trump}</div>
-      {contract && <div className="contract-mini">{contract.level + 5} to make</div>}
-    </div>
-  );
+  return null;
 }
 
 function Hud({ trump, round, turn, contract, phase }) {
@@ -905,8 +899,10 @@ function OppHand({ seat, count, pattern }) {
 
 function PlayerHand({ hand, legalIds, isMyTurn, onPlay, kittyMode, kittyDiscards = [], onToggleDiscard, kittyIds = [] }) {
   const total = hand.length;
-  const containerWidth = Math.min(820, 80 + total * 40);
-  const overlap = total > 1 ? containerWidth / total : 0;
+  const cardWidth = 80;
+  const fanStep = total <= 4 ? 28 : total <= 7 ? 32 : 36;
+  const containerWidth = Math.min(700, cardWidth + Math.max(0, total - 1) * fanStep);
+  const overlap = total > 1 ? (containerWidth - cardWidth) / (total - 1) : 0;
 
   return (
     <div className="player-hand" style={{ width: containerWidth }}>
@@ -914,13 +910,16 @@ function PlayerHand({ hand, legalIds, isMyTurn, onPlay, kittyMode, kittyDiscards
         const center = (total - 1) / 2;
         const offset = i - center;
         const x = i * overlap;
-        const angle = offset * 3;
-        const lift = -Math.abs(offset) * 1.2;
+        const fanProgress = center > 0 ? offset / center : 0;
+        const edge = Math.abs(fanProgress);
+        const arc = 1 - edge;
+        const angle = 0;
+        const lift = 0;
         const isLegal = legalIds.includes(card.id);
         const playable = isMyTurn && isLegal;
         const isFromKitty = kittyMode && kittyIds.includes(card.id);
         const isDiscarding = kittyMode && kittyDiscards.includes(card.id);
-        const transform = `translateX(${x}px) translateY(${lift + (isDiscarding ? -28 : 0)}px) rotate(${angle}deg)`;
+        const transform = `translateX(var(--fan-x)) translateY(calc(var(--fan-y) + var(--discard-lift))) rotate(var(--fan-angle))`;
 
         const handleClick = () => {
           if (kittyMode) onToggleDiscard?.(card.id);
@@ -938,7 +937,11 @@ function PlayerHand({ hand, legalIds, isMyTurn, onPlay, kittyMode, kittyDiscards
               ${isFromKitty ? 'kitty-fresh' : ''}`}
             style={{
               left: `calc(50% - ${containerWidth/2}px)`,
-              transform,
+              zIndex: i,
+              '--fan-x': `${x}px`,
+              '--fan-y': `${lift}px`,
+              '--fan-angle': `${angle}deg`,
+              '--discard-lift': isDiscarding ? '-28px' : '0px',
               ['--rest-transform']: transform,
             }}
             onClick={handleClick}

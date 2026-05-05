@@ -6,6 +6,7 @@ const SUITS = ['♠', '♥', '♦', '♣'];
 const SUIT_NAMES = { '♠': 'Spades', '♥': 'Hearts', '♦': 'Diamonds', '♣': 'Clubs' };
 const RANKS = ['2','3','4','5','6','7','8','9','10','J','Q','K','A'];
 const RANK_VALUE = Object.fromEntries(RANKS.map((r,i) => [r, i+2]));
+const LOW_SORT_RANK_VALUE = { ...RANK_VALUE, A: 1 };
 
 const SEATS = ['S', 'W', 'N', 'E'];
 const NEXT = { S: 'W', W: 'N', N: 'E', E: 'S' };
@@ -27,12 +28,13 @@ function shuffle(arr, rng = Math.random) {
   return a;
 }
 
-function sortHand(hand) {
+function sortHand(hand, low = false) {
   const order = ['♠','♥','♣','♦'];
+  const rankValue = low ? LOW_SORT_RANK_VALUE : RANK_VALUE;
   return [...hand].sort((a,b) => {
     const so = order.indexOf(a.suit) - order.indexOf(b.suit);
     if (so !== 0) return so;
-    return RANK_VALUE[a.rank] - RANK_VALUE[b.rank];
+    return rankValue[a.rank] - rankValue[b.rank];
   });
 }
 
@@ -58,11 +60,12 @@ function legalCards(hand, trick) {
 }
 
 function trickWinner(trick, trump, low = false) {
+  const rankValue = low ? LOW_SORT_RANK_VALUE : RANK_VALUE;
   let best = trick[0];
   for (const play of trick) {
     const c = play.card;
     if (c.suit === trump && best.card.suit !== trump) { best = play; continue; }
-    if (c.suit === best.card.suit && (low ? RANK_VALUE[c.rank] < RANK_VALUE[best.card.rank] : RANK_VALUE[c.rank] > RANK_VALUE[best.card.rank])) {
+    if (c.suit === best.card.suit && (low ? rankValue[c.rank] < rankValue[best.card.rank] : rankValue[c.rank] > rankValue[best.card.rank])) {
       best = play;
     }
   }
@@ -71,13 +74,20 @@ function trickWinner(trick, trump, low = false) {
 
 // --- Bot AI ---
 function botPlay(seat, hand, trick, trump, low = false) {
+  const rankValue = low ? LOW_SORT_RANK_VALUE : RANK_VALUE;
   const legal = legalCards(hand, trick).map(id => hand.find(c => c.id === id));
+  const weakestFirst = (a, b) => low ? rankValue[b.rank] - rankValue[a.rank] : rankValue[a.rank] - rankValue[b.rank];
+  const weakestCard = (cards, preferNonTrump = false) => {
+    const nonTrump = preferNonTrump ? cards.filter(c => c.suit !== trump) : [];
+    const pool = nonTrump.length > 0 ? nonTrump : cards;
+    return [...pool].sort(weakestFirst)[0];
+  };
 
   // No trick yet -> lead. Pick a mid-low non-trump if possible.
   if (trick.length === 0) {
     const nonTrump = legal.filter(c => c.suit !== trump);
     const pool = nonTrump.length > 0 ? nonTrump : legal;
-    pool.sort((a,b) => RANK_VALUE[a.rank] - RANK_VALUE[b.rank]);
+    pool.sort((a,b) => rankValue[a.rank] - rankValue[b.rank]);
     // lead a middling card
     return pool[Math.floor(pool.length / 2)] || pool[0];
   }
@@ -86,42 +96,39 @@ function botPlay(seat, hand, trick, trump, low = false) {
   const currentBest = trick.reduce((best, p) => {
     if (!best) return p;
     if (p.card.suit === trump && best.card.suit !== trump) return p;
-    if (p.card.suit === best.card.suit && (low ? RANK_VALUE[p.card.rank] < RANK_VALUE[best.card.rank] : RANK_VALUE[p.card.rank] > RANK_VALUE[best.card.rank])) return p;
+    if (p.card.suit === best.card.suit && (low ? rankValue[p.card.rank] < rankValue[best.card.rank] : rankValue[p.card.rank] > rankValue[best.card.rank])) return p;
     return best;
   }, null);
 
   // Partner currently winning?
   if (currentBest && TEAM[currentBest.seat] === TEAM[seat]) {
-    // dump lowest legal
-    const sorted = [...legal].sort((a,b) => RANK_VALUE[a.rank] - RANK_VALUE[b.rank]);
-    return sorted[0];
+    return weakestCard(legal, true);
   }
 
   // Try to win cheaply if following suit
   const sameSuit = legal.filter(c => c.suit === lead);
   if (sameSuit.length > 0) {
-    const winners = sameSuit.filter(c => low ? RANK_VALUE[c.rank] < RANK_VALUE[currentBest.card.rank] : RANK_VALUE[c.rank] > RANK_VALUE[currentBest.card.rank]);
+    const winners = sameSuit.filter(c => low ? rankValue[c.rank] < rankValue[currentBest.card.rank] : rankValue[c.rank] > rankValue[currentBest.card.rank]);
     if (winners.length > 0) {
-      winners.sort((a,b) => RANK_VALUE[a.rank] - RANK_VALUE[b.rank]);
+      winners.sort((a,b) => rankValue[a.rank] - rankValue[b.rank]);
       return low ? winners[winners.length - 1] : winners[0]; // cheapest winner
     }
-    // can't win, dump lowest
-    const sorted = [...sameSuit].sort((a,b) => RANK_VALUE[a.rank] - RANK_VALUE[b.rank]);
-    return sorted[0];
+    return weakestCard(sameSuit);
   }
 
   // Can't follow suit. Try a low trump if not already trumped by opponent higher
   const trumps = legal.filter(c => c.suit === trump);
   if (trumps.length > 0) {
     if (currentBest.card.suit === trump) {
-      const overTrumps = trumps.filter(c => low ? RANK_VALUE[c.rank] < RANK_VALUE[currentBest.card.rank] : RANK_VALUE[c.rank] > RANK_VALUE[currentBest.card.rank]);
+      const overTrumps = trumps.filter(c => low ? rankValue[c.rank] < rankValue[currentBest.card.rank] : rankValue[c.rank] > rankValue[currentBest.card.rank]);
       if (overTrumps.length > 0) {
-        overTrumps.sort((a,b) => RANK_VALUE[a.rank] - RANK_VALUE[b.rank]);
+        overTrumps.sort((a,b) => rankValue[a.rank] - rankValue[b.rank]);
         return low ? overTrumps[overTrumps.length - 1] : overTrumps[0];
       }
+      return weakestCard(legal, true);
     } else {
       // safe trump
-      const sorted = [...trumps].sort((a,b) => RANK_VALUE[a.rank] - RANK_VALUE[b.rank]);
+      const sorted = [...trumps].sort((a,b) => rankValue[a.rank] - rankValue[b.rank]);
       return sorted[0];
     }
   }
@@ -129,7 +136,7 @@ function botPlay(seat, hand, trick, trump, low = false) {
   // Discard lowest non-trump
   const nonTrump = legal.filter(c => c.suit !== trump);
   const pool = nonTrump.length > 0 ? nonTrump : legal;
-  pool.sort((a,b) => RANK_VALUE[a.rank] - RANK_VALUE[b.rank]);
+  pool.sort((a,b) => rankValue[a.rank] - rankValue[b.rank]);
   return pool[0];
 }
 
