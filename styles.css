@@ -130,6 +130,63 @@ body { background: var(--bg); color: var(--ink); }
   margin-right: 6px;
   box-shadow: 0 0 0 3px oklch(0.7 0.15 145 / 0.2);
 }
+.topbar-meta .pip.offline {
+  background: var(--ink-3);
+  box-shadow: 0 0 0 3px oklch(0.6 0.01 80 / 0.16);
+}
+.online-room {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  min-height: 28px;
+}
+.online-status {
+  display: inline-flex;
+  align-items: baseline;
+  gap: 6px;
+  white-space: nowrap;
+}
+.online-status b {
+  color: var(--ink);
+  font-weight: 700;
+}
+.online-status em {
+  color: var(--ink-3);
+  font-style: normal;
+  font-size: 10px;
+}
+.online-btn {
+  height: 26px;
+  padding: 0 9px;
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  background: var(--bg);
+  color: var(--ink);
+  font: 700 11px/1 'Inter', sans-serif;
+  cursor: pointer;
+}
+.online-btn:hover {
+  border-color: var(--ink);
+}
+.online-room input {
+  width: 62px;
+  height: 26px;
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  background: var(--bg);
+  color: var(--ink);
+  font: 700 11px/1 'Inter', sans-serif;
+  letter-spacing: 0.04em;
+  padding: 0 7px;
+  text-transform: uppercase;
+}
+.online-error {
+  max-width: 180px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: var(--red);
+}
 
 /* ---------- TABLE ---------- */
 .stage {
@@ -1541,6 +1598,8 @@ body { background: var(--bg); color: var(--ink); }
   .topbar { padding: 10px 14px; }
   .topbar-meta { gap: 10px; font-size: 11px; }
   .brand small { display: none; }
+  .online-room input,
+  .online-btn { display: none; }
   .opp-card { margin-left: -22px; }
   .seat-south { bottom: 8px; }
   .seat-north { top: 60px; }

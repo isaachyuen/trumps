@@ -40,6 +40,7 @@ function nextLosingTeamDealer(losingTeam, currentDealer, nextByTeam) {
 function App() {
   const [tweaks, setTweaks] = useTweaks(TWEAK_DEFAULTS);
   const [editMode, setEditMode] = useState(false);
+  const multiplayer = useMultiplayerSession();
 
   // game state
   const [phase, setPhase] = useState('dealing'); // 'dealing' | 'bidding' | 'chooseTrump' | 'reveal' | 'kitty' | 'play' | 'roundEnd' | 'matchEnd'
@@ -429,7 +430,7 @@ function App() {
 
   return (
     <div className="app">
-      <TopBar round={round} phase={phase} matchHands={matchHands} handsWon={handsWon} />
+      <TopBar round={round} phase={phase} matchHands={matchHands} handsWon={handsWon} multiplayer={multiplayer} />
       <div className="stage">
         <div className="felt"><div className="felt-disc" /></div>
 
@@ -660,7 +661,7 @@ function DealingAnimation({ dealer, pattern }) {
   );
 }
 
-function TopBar({ round, phase, matchHands, handsWon }) {
+function TopBar({ round, phase, matchHands, handsWon, multiplayer }) {
   const phaseLabel = phase === 'dealing' ? 'Dealing' : phase === 'bidding' ? 'Bidding' : phase === 'chooseTrump' ? 'Trump' : phase === 'reveal' ? 'Contract' : phase === 'play' ? 'In play' : phase === 'matchEnd' ? 'Match end' : 'Round end';
   return (
     <div className="topbar">
@@ -670,11 +671,41 @@ function TopBar({ round, phase, matchHands, handsWon }) {
         <small>4 players</small>
       </div>
       <div className="topbar-meta">
-        <span><span className="pip" />Connected</span>
-        <span>Room <b style={{color:'var(--ink)'}}>NIGHTHAWK</b></span>
+        <OnlineRoomControl multiplayer={multiplayer} />
         <span>Hand {round} • {phaseLabel}</span>
         <span>Best of {matchHands}: {handsWon.A}-{handsWon.B}</span>
       </div>
+    </div>
+  );
+}
+
+function OnlineRoomControl({ multiplayer }) {
+  const [roomCode, setRoomCode] = useState('');
+  const room = multiplayer.room;
+  const statusLabel = room ? `Room ${room.code}` : multiplayer.status === 'connected' ? 'Online' : 'Local';
+  const seatLabel = multiplayer.seat ? `Seat ${multiplayer.seat}` : '';
+
+  return (
+    <div className="online-room">
+      <span className={`pip ${multiplayer.status === 'offline' ? 'offline' : ''}`} />
+      <span className="online-status">
+        <b>{statusLabel}</b>
+        {seatLabel && <em>{seatLabel}</em>}
+      </span>
+      {!room && (
+        <>
+          <button className="online-btn" type="button" onClick={multiplayer.createRoom}>Host</button>
+          <input
+            value={roomCode}
+            onChange={e => setRoomCode(e.target.value.toUpperCase())}
+            onKeyDown={e => { if (e.key === 'Enter') multiplayer.joinRoom(roomCode); }}
+            placeholder="Code"
+            aria-label="Room code"
+          />
+          <button className="online-btn" type="button" onClick={() => multiplayer.joinRoom(roomCode)}>Join</button>
+        </>
+      )}
+      {multiplayer.error && <span className="online-error">{multiplayer.error}</span>}
     </div>
   );
 }

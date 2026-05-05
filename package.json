@@ -1,0 +1,14 @@
+{
+  "name": "trumps_v2",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Static Trumps client with a local multiplayer server scaffold.",
+  "main": "server.js",
+  "scripts": {
+    "start": "node server.js",
+    "check": "node --check server.js"
+  },
+  "dependencies": {
+    "ws": "^8.18.0"
+  }
+}
