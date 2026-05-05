@@ -1,5 +1,5 @@
 
-// tweaks-panel.jsx
+// tweaks_panel.jsx
 // Reusable Tweaks shell + form-control helpers.
 //
 // Owns the host protocol (listens for __activate_edit_mode / __deactivate_edit_mode,

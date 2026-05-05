@@ -2,7 +2,7 @@
 
 ## How to Run
 
-Open `Trumps Table.html` directly in a browser, or serve the folder:
+Open `trumps_table.html` directly in a browser, or serve the folder:
 
 ```powershell
 cd "C:\Users\isaac\trumps v2"
@@ -11,16 +11,16 @@ python -m http.server 8000
 
 Then open `http://localhost:8000/Trumps%20Table.html`.
 
-The HTML uses cache-busting query strings for local JSX/CSS. If you change `app.jsx`, `game.jsx`, `card.jsx`, or `styles.css`, bump the corresponding `?v=` value in `Trumps Table.html`.
+The HTML uses cache-busting query strings for local JSX/CSS. If you change `app.jsx`, `game.jsx`, `card.jsx`, or `styles.css`, bump the corresponding `?v=` value in `trumps_table.html`.
 
 ## File Map
 
-- `Trumps Table.html`: static entry point, loads React/Babel from CDN and local JSX files.
+- `trumps_table.html`: static entry point, loads React/Babel from CDN and local JSX files.
 - `game.jsx`: pure game rules and bot helpers.
 - `app.jsx`: React state machine, bidding/play flow, match/dealer logic, UI components.
 - `card.jsx`: card face/back rendering and pip layouts.
 - `styles.css`: layout, card styling, animations, panels.
-- `tweaks-panel.jsx`: visual tweak UI.
+- `tweaks_panel.jsx`: visual tweak UI.
 
 ## Current Game Flow
 
