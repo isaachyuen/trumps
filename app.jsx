@@ -12,7 +12,7 @@ const TURN_TIME_MS = 12000;
 const POST_TRICK_MS = 1700;
 const PRE_COLLECT_MS = 1300;
 const REVEAL_MS = 2200;
-const DEAL_MS = 1900;
+const DEAL_MS = 4300;
 const BOT_DELAY = [550, 950];
 const BID_BOT_DELAY = [800, 1400];
 const TEAM_PARTNERS = { S: 'N', N: 'S', W: 'E', E: 'W' };
@@ -41,6 +41,9 @@ function App() {
   const [tweaks, setTweaks] = useTweaks(TWEAK_DEFAULTS);
   const [editMode, setEditMode] = useState(false);
   const multiplayer = useMultiplayerSession();
+  const [playMode, setPlayMode] = useState(null); // null | 'local' | 'host'
+  const [multiplayerRole, setMultiplayerRole] = useState(null); // null | 'host' | 'join'
+  const [playerName, setPlayerName] = useState('South');
 
   // game state
   const [phase, setPhase] = useState('dealing'); // 'dealing' | 'bidding' | 'chooseTrump' | 'reveal' | 'kitty' | 'play' | 'roundEnd' | 'matchEnd'
@@ -73,11 +76,24 @@ function App() {
   const turnRef = useRef(turn);
   turnRef.current = turn;
 
+  const mySeat = playMode === 'host' ? (multiplayer.seat || 'S') : 'S';
+  const isRemoteClient = playMode === 'host' && multiplayerRole === 'join';
+  const isHostClient = playMode !== 'host' || multiplayerRole !== 'join';
+  const isHumanSeat = useCallback((seat) => {
+    if (playMode !== 'host') return seat === 'S';
+    if (!multiplayer.room) return seat === 'S';
+    return Boolean(multiplayer.room?.seats?.[seat]?.occupied);
+  }, [playMode, multiplayer.room]);
+
   const currentHigh = bids.filter(b => !b.pass).slice(-1)[0] || null;
   const lowSortActive = contract?.mode === 'low' || currentHigh?.mode === 'low';
-  const hand = sortHand(hands?.S || [], lowSortActive);
-  const isMyTurn = phase === 'play' && turn === 'S' && !collecting;
+  const hand = sortHand(hands?.[mySeat] || [], lowSortActive);
+  const isMyTurn = phase === 'play' && turn === mySeat && !collecting;
   const legalIds = isMyTurn && hands ? legalCards(hand, trickPlays) : [];
+  const getSeatName = (seat) => {
+    if (seat === mySeat && (!multiplayer.room?.seats?.[seat]?.name)) return playerName;
+    return multiplayer.room?.seats?.[seat]?.name || SEAT_NAMES[seat];
+  };
 
   // Apply theme attrs
   useEffect(() => {
@@ -134,44 +150,73 @@ function App() {
     setFirstDealer(opening.dealer);
     setNextDealerByTeam(initialNextDealerByTeam);
     setNextRoundDealer(null);
-    setToast(`High-card draw: ${SEAT_NAMES[opening.dealer]} ${opening.dealer === 'S' ? 'deal' : 'deals'} first`);
+    setToast(`High-card draw: ${getSeatName(opening.dealer)} ${opening.dealer === mySeat ? 'deal' : 'deals'} first`);
     startRound(opening.dealer);
   }, [matchHands, startRound]);
 
-  useEffect(() => { startMatch(matchHands); }, []); // eslint-disable-line
+  const startLocalGame = useCallback((name) => {
+    setPlayerName(cleanPlayerName(name));
+    setMultiplayerRole(null);
+    setPlayMode('local');
+    startMatch(matchHands);
+  }, [matchHands, startMatch]);
+
+  const startHostedGame = useCallback((name) => {
+    const cleanName = cleanPlayerName(name);
+    setPlayerName(cleanName);
+    setMultiplayerRole('host');
+    setPlayMode('host');
+    multiplayer.createRoom(cleanName);
+  }, [multiplayer]);
+
+  const joinHostedGame = useCallback((roomCode, name) => {
+    const cleanName = cleanPlayerName(name);
+    setPlayerName(cleanName);
+    multiplayer.joinRoom(roomCode, cleanName, '', true);
+    setMultiplayerRole('join');
+    setPlayMode('host');
+  }, [multiplayer]);
 
   useEffect(() => {
-    if (phase !== 'dealing') return;
+    if (!playMode || isRemoteClient || phase !== 'dealing') return;
     const t = setTimeout(() => {
       setToast(null);
       setPhase('bidding');
       setTurnStart(Date.now());
     }, DEAL_MS);
     return () => clearTimeout(t);
-  }, [phase]);
+  }, [phase, playMode, isRemoteClient]);
 
   // ----- BIDDING -----
   const submitBid = useCallback((seat, bid) => {
     setBids(prev => [...prev, { seat, ...bid }]);
   }, []);
 
+  const applyBid = useCallback((seat, bid) => {
+    if (phase !== 'bidding' || bidTurn !== seat) return;
+    if (!bid.pass && currentHigh && !bidGreaterThan(bid, currentHigh)) return;
+    submitBid(seat, bid);
+    setBidTurn(NEXT[seat]);
+    setTurnStart(Date.now());
+  }, [phase, bidTurn, currentHigh, submitBid]);
+
   // Bot bidding
   useEffect(() => {
+    if (isRemoteClient) return;
     if (phase !== 'bidding' || !hands) return;
-    if (bidTurn === 'S') return; // wait for human
+    if (isHumanSeat(bidTurn)) return; // wait for human
 
     const t = setTimeout(() => {
       const partnerLastBid = [...bids].reverse().find(b => TEAM[b.seat] === TEAM[bidTurn]);
       const bid = botBid(hands[bidTurn], currentHigh, partnerLastBid);
-      submitBid(bidTurn, bid);
-      setBidTurn(NEXT[bidTurn]);
-      setTurnStart(Date.now());
+      applyBid(bidTurn, bid);
     }, BID_BOT_DELAY[0] + Math.random() * (BID_BOT_DELAY[1] - BID_BOT_DELAY[0]));
     return () => clearTimeout(t);
-  }, [phase, bidTurn, hands, bids, currentHigh, submitBid]);
+  }, [phase, bidTurn, hands, bids, currentHigh, applyBid, isRemoteClient, isHumanSeat]);
 
   // Auction termination
   useEffect(() => {
+    if (isRemoteClient) return;
     if (phase !== 'bidding') return;
     if (bids.length === 0) return;
     if (bids.length < 4) return;
@@ -196,19 +241,22 @@ function App() {
       };
       setContract(newContract);
       setTurn(winner.seat); // winning bidder leads first
-      if (winner.seat === 'S') {
+      const winnerIsFirstBidder = winner.seat === NEXT[dealer];
+      setKittyRevealed(winnerIsFirstBidder);
+      if (isHumanSeat(winner.seat)) {
         setPhase('chooseTrump');
       } else {
-        const suit = chooseTrumpSuit(hands[winner.seat]);
+        const suit = chooseTrumpSuit(winnerIsFirstBidder ? [...hands[winner.seat], ...kitty] : hands[winner.seat]);
         setContract({ ...newContract, suit });
         setTrump(suit);
         setPhase('reveal');
       }
     }
-  }, [bids, phase, startRound, hands]);
+  }, [bids, phase, startRound, hands, kitty, dealer, isRemoteClient, isHumanSeat]);
 
   // Reveal → kitty transition (own effect so it isn't canceled by re-renders)
   useEffect(() => {
+    if (isRemoteClient) return;
     if (phase !== 'reveal') return;
     const t = setTimeout(() => {
       setPhase('kitty');
@@ -216,7 +264,7 @@ function App() {
       setTurnStart(Date.now());
     }, REVEAL_MS);
     return () => clearTimeout(t);
-  }, [phase]);
+  }, [phase, isRemoteClient]);
 
   // Play a card
   const playCard = useCallback((seat, card) => {
@@ -226,8 +274,9 @@ function App() {
 
   // Bot play
   useEffect(() => {
+    if (isRemoteClient) return;
     if (phase !== 'play' || !hands || collecting) return;
-    if (turn === 'S') return;
+    if (isHumanSeat(turn)) return;
     if (trickPlays.length >= 4) return;
 
     const t = setTimeout(() => {
@@ -240,13 +289,14 @@ function App() {
       setTurnStart(Date.now());
     }, BOT_DELAY[0] + Math.random() * (BOT_DELAY[1] - BOT_DELAY[0]));
     return () => clearTimeout(t);
-  }, [turn, hands, trickPlays, phase, collecting, trump, contract, playCard]);
+  }, [turn, hands, trickPlays, phase, collecting, trump, contract, playCard, isRemoteClient, isHumanSeat]);
 
   // Resolve trick
   useEffect(() => {
+    if (isRemoteClient) return;
     if (phase !== 'play' || trickPlays.length !== 4) return;
     const winner = trickWinner(trickPlays, trump, contract?.mode === 'low');
-    setToast(`${SEAT_NAMES[winner]} ${winner === 'S' ? 'win' : 'wins'} the trick`);
+    setToast(`${getSeatName(winner)} ${winner === mySeat ? 'win' : 'wins'} the trick`);
 
     const t1 = setTimeout(() => {
       setCollecting(true);
@@ -262,10 +312,11 @@ function App() {
       setToast(null);
     }, PRE_COLLECT_MS + POST_TRICK_MS);
     return () => { clearTimeout(t1); clearTimeout(t2); };
-  }, [trickPlays, trump, phase, contract]);
+  }, [trickPlays, trump, phase, contract, isRemoteClient, mySeat]);
 
   // Round end detection: score and flip to roundEnd
   useEffect(() => {
+    if (isRemoteClient) return;
     if (phase !== 'play' || !hands || !contract) return;
     if (trickPlays.length !== 0) return; // wait until any in-flight trick has resolved
     const total = Object.values(hands).reduce((a,b) => a + b.length, 0);
@@ -310,21 +361,23 @@ function App() {
       }
       setPhase(matchWinner ? 'matchEnd' : 'roundEnd');
     }
-  }, [hands, tricksWon, phase, contract, trickPlays, handsWon, matchHands, dealer, nextDealerByTeam]);
+  }, [hands, tricksWon, phase, contract, trickPlays, handsWon, matchHands, dealer, nextDealerByTeam, isRemoteClient]);
 
   // roundEnd → next round (own effect so the timeout isn't canceled when
   // setPhase('roundEnd') above causes the detection effect to re-run)
   useEffect(() => {
+    if (isRemoteClient) return;
     if (phase !== 'roundEnd') return;
     const t = setTimeout(() => {
       setRound(r => r + 1);
       startRound(nextRoundDealer || dealer);
     }, 2800);
     return () => clearTimeout(t);
-  }, [phase, startRound, dealer, nextRoundDealer]);
+  }, [phase, startRound, dealer, nextRoundDealer, isRemoteClient]);
 
   // Bot emotes
   useEffect(() => {
+    if (isRemoteClient) return;
     if (!hands || phase === 'dealing' || phase === 'reveal') return;
     const emotes = ['👏','🤔','😅','💭','✨','🎯'];
     const t = setInterval(() => {
@@ -336,41 +389,70 @@ function App() {
       }
     }, 5000);
     return () => clearInterval(t);
-  }, [hands, phase]);
+  }, [hands, phase, isRemoteClient]);
 
-  const onPlayMine = (card) => {
-    if (!isMyTurn) return;
-    if (!legalIds.includes(card.id)) return;
-    playCard('S', card);
-    setTurn('W');
+  const applyPlay = useCallback((seat, cardId) => {
+    if (phase !== 'play' || collecting || turn !== seat || !hands) return;
+    const seatHand = hands[seat] || [];
+    const card = seatHand.find(c => c.id === cardId);
+    if (!card) return;
+    const legal = legalCards(sortHand(seatHand, contract?.mode === 'low'), trickPlays);
+    if (!legal.includes(card.id)) return;
+    playCard(seat, card);
+    setTurn(NEXT[seat]);
     setTurnStart(Date.now());
-  };
+  }, [phase, collecting, turn, hands, contract, trickPlays, playCard]);
 
-  const onMyBid = (bid) => {
-    if (phase !== 'bidding' || bidTurn !== 'S') return;
-    if (!bid.pass && currentHigh && !bidGreaterThan(bid, currentHigh)) return;
-    submitBid('S', bid);
-    setBidTurn(NEXT['S']);
-    setTurnStart(Date.now());
-  };
-
-  const onChooseTrump = (suit) => {
-    if (phase !== 'chooseTrump' || !contract || contract.declarer !== 'S') return;
+  const applyTrump = useCallback((seat, suit) => {
+    if (phase !== 'chooseTrump' || !contract || contract.declarer !== seat) return;
     setContract(c => ({ ...c, suit }));
     setTrump(suit);
     setPhase('reveal');
     setTurnStart(Date.now());
+  }, [phase, contract]);
+
+  const onPlayMine = (card) => {
+    if (!isMyTurn) return;
+    if (!legalIds.includes(card.id)) return;
+    if (isRemoteClient) {
+      multiplayer.sendPlayerAction({ type: 'play_card', cardId: card.id });
+      return;
+    }
+    applyPlay(mySeat, card.id);
+  };
+
+  const onMyBid = (bid) => {
+    if (phase !== 'bidding' || bidTurn !== mySeat) return;
+    if (isRemoteClient) {
+      multiplayer.sendPlayerAction({ type: 'submit_bid', bid });
+      return;
+    }
+    applyBid(mySeat, bid);
+  };
+
+  const onChooseTrump = (suit) => {
+    if (phase !== 'chooseTrump' || !contract || contract.declarer !== mySeat) return;
+    if (isRemoteClient) {
+      multiplayer.sendPlayerAction({ type: 'choose_trump', suit });
+      return;
+    }
+    applyTrump(mySeat, suit);
   };
 
   // ----- KITTY EXCHANGE -----
   // When the kitty phase starts: declarer takes the 4 kitty cards into hand,
   // then must discard 4 (any suit). Bots auto-pick. Human picks 4 to discard.
   useEffect(() => {
+    if (isRemoteClient) return;
     if (phase !== 'kitty' || !contract) return;
 
-    if (contract.declarer === 'S') {
-      // Add kitty to my hand for visual selection
-      setHands(h => ({ ...h, S: sortHand([...h.S, ...kitty], contract.mode === 'low') }));
+    if (isHumanSeat(contract.declarer)) {
+      // Add kitty to the declarer's hand for visual selection.
+      setHands(h => {
+        const seatHand = h[contract.declarer] || [];
+        if (kitty.every(card => seatHand.some(existing => existing.id === card.id))) return h;
+        return { ...h, [contract.declarer]: sortHand([...seatHand, ...kitty], contract.mode === 'low') };
+      });
       // wait for human discards
       return;
     }
@@ -387,17 +469,17 @@ function App() {
       const discards = sorted.slice(0, 4).map(c => c.id);
       const remaining = combined.filter(c => !discards.includes(c.id));
       setHands(h => ({ ...h, [contract.declarer]: sortHand(remaining, contract.mode === 'low') }));
-      setToast(`${SEAT_NAMES[contract.declarer]} took the kitty`);
+      setToast(`${getSeatName(contract.declarer)} took the kitty`);
       setTimeout(() => setToast(null), 1400);
       setTurn(contract.declarer);
       setPhase('play');
       setTurnStart(Date.now());
     }, 2000);
     return () => clearTimeout(t);
-  }, [phase, contract, kitty]);
+  }, [phase, contract, kitty, hands, isRemoteClient, isHumanSeat]);
 
   const toggleDiscard = (cardId) => {
-    if (phase !== 'kitty' || !contract || contract.declarer !== 'S') return;
+    if (phase !== 'kitty' || !contract || contract.declarer !== mySeat) return;
     setKittyDiscards(prev => {
       if (prev.includes(cardId)) return prev.filter(id => id !== cardId);
       if (prev.length >= 4) return prev;
@@ -405,15 +487,36 @@ function App() {
     });
   };
 
-  const confirmKittyDiscard = () => {
-    if (kittyDiscards.length !== 4) return;
-    setHands(h => ({ ...h, S: h.S.filter(c => !kittyDiscards.includes(c.id)) }));
+  const applyKittyDiscard = useCallback((seat, discards) => {
+    if (phase !== 'kitty' || !contract || contract.declarer !== seat || discards.length !== 4) return;
+    setHands(h => ({ ...h, [seat]: h[seat].filter(c => !discards.includes(c.id)) }));
     setKittyDiscards([]);
     setKittyRevealed(false);
     setTurn(contract.declarer);
     setPhase('play');
     setTurnStart(Date.now());
+  }, [phase, contract]);
+
+  const confirmKittyDiscard = () => {
+    if (kittyDiscards.length !== 4) return;
+    if (isRemoteClient) {
+      multiplayer.sendPlayerAction({ type: 'discard_kitty', discards: kittyDiscards });
+      return;
+    }
+    applyKittyDiscard(mySeat, kittyDiscards);
   };
+
+  useEffect(() => {
+    if (!isHostClient || multiplayer.playerActions.length === 0) return;
+    for (const message of multiplayer.playerActions) {
+      const action = message.action || {};
+      if (action.type === 'submit_bid') applyBid(message.seat, action.bid);
+      else if (action.type === 'choose_trump') applyTrump(message.seat, action.suit);
+      else if (action.type === 'play_card') applyPlay(message.seat, action.cardId);
+      else if (action.type === 'discard_kitty') applyKittyDiscard(message.seat, action.discards || []);
+    }
+    multiplayer.clearPlayerActions();
+  }, [isHostClient, multiplayer.playerActions, multiplayer.clearPlayerActions, applyBid, applyTrump, applyPlay, applyKittyDiscard]);
 
   const teamA_tricks = tricksWon.S + tricksWon.N;
   const teamB_tricks = tricksWon.W + tricksWon.E;
@@ -423,18 +526,143 @@ function App() {
     phase === 'bidding' ? bidTurn :
     phase === 'play' && !collecting ? turn :
     null;
+  const firstBidder = NEXT[dealer];
+  const firstBidderPreview = phase === 'chooseTrump' && contract?.declarer === firstBidder;
 
   const handleMatchHandsChange = (hands) => {
+    if (isRemoteClient) return;
     startMatch(hands);
   };
 
+  const gameSnapshot = {
+    phase,
+    hands,
+    kitty,
+    kittyRevealed,
+    trump,
+    contract,
+    bids,
+    bidMode,
+    bidTurn,
+    trickPlays,
+    collecting,
+    collectingSeat,
+    turn,
+    tricksWon,
+    teamScore,
+    handsWon,
+    matchHands,
+    round,
+    turnStart,
+    dealer,
+    dealerDraw,
+    firstDealer,
+    nextDealerByTeam,
+    nextRoundDealer,
+    toast,
+  };
+
+  useEffect(() => {
+    if (playMode !== 'host' || !isHostClient || !multiplayer.room || !hands) return;
+    multiplayer.syncState(gameSnapshot);
+  }, [
+    playMode, isHostClient, multiplayer.room, multiplayer.syncState, hands, phase, kitty, kittyRevealed, trump,
+    contract, bids, bidMode, bidTurn, trickPlays, collecting, collectingSeat,
+    turn, tricksWon, teamScore, handsWon, matchHands, round, turnStart, dealer,
+    dealerDraw, firstDealer, nextDealerByTeam, nextRoundDealer, toast,
+  ]);
+
+  useEffect(() => {
+    if (!isRemoteClient || !multiplayer.gameState) return;
+    const state = multiplayer.gameState;
+    setPhase(state.phase);
+    setHands(state.hands);
+    setKitty(state.kitty || []);
+    setKittyRevealed(Boolean(state.kittyRevealed));
+    setTrump(state.trump);
+    setContract(state.contract);
+    setBids(state.bids || []);
+    setBidMode(state.bidMode || 'high');
+    setBidTurn(state.bidTurn || 'S');
+    setTrickPlays(state.trickPlays || []);
+    setCollecting(Boolean(state.collecting));
+    setCollectingSeat(state.collectingSeat);
+    setTurn(state.turn || 'S');
+    setTricksWon(state.tricksWon || { S: 0, W: 0, N: 0, E: 0 });
+    setTeamScore(state.teamScore || { A: 0, B: 0 });
+    setHandsWon(state.handsWon || { A: 0, B: 0 });
+    setMatchHands(state.matchHands || 3);
+    setRound(state.round || 1);
+    setTurnStart(state.turnStart || Date.now());
+    setDealer(state.dealer || 'E');
+    setDealerDraw(state.dealerDraw || null);
+    setFirstDealer(state.firstDealer || null);
+    setNextDealerByTeam(state.nextDealerByTeam || TEAM_FIRST_DEALER);
+    setNextRoundDealer(state.nextRoundDealer || null);
+    setToast(state.toast || null);
+  }, [isRemoteClient, multiplayer.gameState]);
+
+  const seatName = getSeatName;
+  const seatInitial = (seat) => (seatName(seat).slice(0, 1).toUpperCase() || seat);
+  const viewSeats = seatsFromPerspective(mySeat);
+  const viewPos = (seat) => pos(seat, mySeat);
+
+  if (!playMode) {
+    return (
+      <div className="app start-app">
+        <StartScreen
+          onStartLocal={startLocalGame}
+          onHostGame={startHostedGame}
+          onJoinGame={joinHostedGame}
+          multiplayerError={multiplayer.error}
+          multiplayerStatus={multiplayer.status}
+        />
+        {editMode && (
+          <TweaksPanel title="Tweaks">
+            <TweakSection title="Theme">
+              <TweakRadio value={tweaks.theme} onChange={(v) => setTweaks({ theme: v })}
+                options={[{value:'light',label:'Light'},{value:'dark',label:'Dark'},{value:'sepia',label:'Sepia'}]} />
+            </TweakSection>
+            <TweakSection title="Felt color">
+              <TweakRadio value={tweaks.felt} onChange={(v) => setTweaks({ felt: v })}
+                options={[{value:'green',label:'Green'},{value:'blue',label:'Blue'},{value:'burgundy',label:'Burgundy'},{value:'charcoal',label:'Charcoal'}]} />
+            </TweakSection>
+            <TweakSection title="Density">
+              <TweakRadio value={tweaks.density} onChange={(v) => setTweaks({ density: v })}
+                options={[{value:'compact',label:'Compact'},{value:'comfortable',label:'Comfortable'},{value:'roomy',label:'Roomy'}]} />
+            </TweakSection>
+            <TweakSection title="Card back">
+              <TweakRadio value={tweaks.cardBack} onChange={(v) => setTweaks({ cardBack: v })}
+                options={[{value:'diamonds',label:'Diamonds'},{value:'weave',label:'Weave'},{value:'lines',label:'Lines'},{value:'solid',label:'Solid'}]} />
+            </TweakSection>
+          </TweaksPanel>
+        )}
+      </div>
+    );
+  }
+
+  if (playMode === 'host' && (!hands || !multiplayer.seat)) {
+    return (
+      <div className="app start-app">
+        <LobbyScreen
+          room={multiplayer.room}
+          seat={multiplayer.seat}
+          isHost={multiplayerRole === 'host'}
+          error={multiplayer.error}
+          onChooseSeat={multiplayer.chooseSeat}
+          onStart={() => startMatch(matchHands)}
+        />
+      </div>
+    );
+  }
+
   return (
     <div className="app">
-      <TopBar round={round} phase={phase} matchHands={matchHands} handsWon={handsWon} multiplayer={multiplayer} />
+      <TopBar round={round} phase={phase} matchHands={matchHands} handsWon={handsWon} multiplayer={multiplayer} playMode={playMode} mySeat={mySeat} />
       <div className="stage">
         <div className="felt"><div className="felt-disc" /></div>
 
-        <Hud trump={trump} round={round} turn={turn} contract={contract} phase={phase} />
+        <Hud trump={trump} round={round} turn={turn} contract={contract} phase={phase} seatName={seatName} />
         <ScoreCard
           teamA_tricks={teamA_tricks}
           teamB_tricks={teamB_tricks}
@@ -443,55 +671,55 @@ function App() {
           matchHands={matchHands}
           onMatchHandsChange={handleMatchHandsChange}
           dealer={dealer}
-          firstDealer={firstDealer}
-          dealerDraw={dealerDraw}
           contract={contract}
+          mySeat={mySeat}
+          seatName={seatName}
         />
 
         {showHands && (
           <>
-            <OppHand seat="N" count={hands.N.length} pattern={tweaks.cardBack} />
-            <OppHand seat="W" count={hands.W.length} pattern={tweaks.cardBack} />
-            <OppHand seat="E" count={hands.E.length} pattern={tweaks.cardBack} />
+            {viewSeats.west !== mySeat && <OppHand pos="west" count={hands[viewSeats.west].length} pattern={tweaks.cardBack} />}
+            {viewSeats.north !== mySeat && <OppHand pos="north" count={hands[viewSeats.north].length} pattern={tweaks.cardBack} />}
+            {viewSeats.east !== mySeat && <OppHand pos="east" count={hands[viewSeats.east].length} pattern={tweaks.cardBack} />}
           </>
         )}
 
-        <Seat pos="south" name={SEAT_NAMES.S} initial="Y" you
-              active={activeSeat === 'S'}
-              dealer={dealer === 'S'}
-              tricks={tricksWon.S} turnTime={turnStart}
-              lastBid={lastBidFor(bids, 'S')}
+        <Seat pos="south" name={seatName(viewSeats.south)} initial={seatInitial(viewSeats.south)} you={mySeat === viewSeats.south}
+              active={activeSeat === viewSeats.south}
+              dealer={dealer === viewSeats.south}
+              tricks={tricksWon[viewSeats.south]} turnTime={turnStart}
+              lastBid={lastBidFor(bids, viewSeats.south)}
               showBid={phase === 'bidding'} />
-        <Seat pos="west" name={SEAT_NAMES.W} initial="M"
-              active={activeSeat === 'W'}
-              dealer={dealer === 'W'}
-              tricks={tricksWon.W} turnTime={turnStart}
-              lastBid={lastBidFor(bids, 'W')}
+        <Seat pos="west" name={seatName(viewSeats.west)} initial={seatInitial(viewSeats.west)} you={mySeat === viewSeats.west}
+              active={activeSeat === viewSeats.west}
+              dealer={dealer === viewSeats.west}
+              tricks={tricksWon[viewSeats.west]} turnTime={turnStart}
+              lastBid={lastBidFor(bids, viewSeats.west)}
               showBid={phase === 'bidding'} />
-        <Seat pos="north" name={SEAT_NAMES.N} initial="T"
-              active={activeSeat === 'N'}
-              dealer={dealer === 'N'}
-              tricks={tricksWon.N} turnTime={turnStart}
-              lastBid={lastBidFor(bids, 'N')}
+        <Seat pos="north" name={seatName(viewSeats.north)} initial={seatInitial(viewSeats.north)} you={mySeat === viewSeats.north}
+              active={activeSeat === viewSeats.north}
+              dealer={dealer === viewSeats.north}
+              tricks={tricksWon[viewSeats.north]} turnTime={turnStart}
+              lastBid={lastBidFor(bids, viewSeats.north)}
               showBid={phase === 'bidding'} />
-        <Seat pos="east" name={SEAT_NAMES.E} initial="A"
-              active={activeSeat === 'E'}
-              dealer={dealer === 'E'}
-              tricks={tricksWon.E} turnTime={turnStart}
-              lastBid={lastBidFor(bids, 'E')}
+        <Seat pos="east" name={seatName(viewSeats.east)} initial={seatInitial(viewSeats.east)} you={mySeat === viewSeats.east}
+              active={activeSeat === viewSeats.east}
+              dealer={dealer === viewSeats.east}
+              tricks={tricksWon[viewSeats.east]} turnTime={turnStart}
+              lastBid={lastBidFor(bids, viewSeats.east)}
               showBid={phase === 'bidding'} />
 
         <div className="table-center">
           <CenterBadge phase={phase} trump={trump} contract={contract} currentHigh={currentHigh} />
         </div>
 
-        {phase === 'dealing' && <DealingAnimation dealer={dealer} pattern={tweaks.cardBack} />}
+        {phase === 'dealing' && <DealingAnimation dealer={dealer} pattern={tweaks.cardBack} perspectiveSeat={mySeat} />}
 
         <div className="trick-zone">
           {trickPlays.map(p => (
             <div
               key={p.card.id}
-              className={`trick-card ${pos(p.seat)} ${collecting ? `collecting to-${pos(collectingSeat)}` : ''}`}
+              className={`trick-card ${viewPos(p.seat)} ${collecting ? `collecting to-${viewPos(collectingSeat)}` : ''}`}
             >
               <CardFace rank={p.card.rank} suit={p.card.suit} />
             </div>
@@ -505,7 +733,7 @@ function App() {
               legalIds={legalIds}
               isMyTurn={isMyTurn}
               onPlay={onPlayMine}
-              kittyMode={phase === 'kitty' && contract?.declarer === 'S'}
+              kittyMode={phase === 'kitty' && contract?.declarer === mySeat}
               kittyDiscards={kittyDiscards}
               onToggleDiscard={toggleDiscard}
               kittyIds={kitty.map(c => c.id)}
@@ -513,23 +741,28 @@ function App() {
           </div>
         )}
 
-        {/* Kitty display: face-down stack only. Face-up contents are private
-            to the winning bidder and are shown via KittyPanel when declarer is South. */}
-        {phase !== 'roundEnd' && phase !== 'dealing' && kitty.length > 0 && (phase === 'bidding' || phase === 'reveal' || (phase === 'kitty' && contract?.declarer !== 'S')) && (
+        {/* Kitty display. The first bidder may preview it before choosing trump if they win the auction. */}
+        {phase !== 'roundEnd' && phase !== 'dealing' && kitty.length > 0 && (
+          phase === 'bidding' ||
+          phase === 'reveal' ||
+          (phase === 'chooseTrump' && firstBidderPreview && contract?.declarer === mySeat) ||
+          (phase === 'kitty' && contract?.declarer !== mySeat)
+        ) && (
           <KittyStack
             cards={kitty}
-            faceUp={false}
+            faceUp={phase === 'chooseTrump' && firstBidderPreview && contract?.declarer === mySeat}
             pattern={tweaks.cardBack}
             label={
               phase === 'bidding' ? 'Kitty' :
-              phase === 'kitty' ? `${SEAT_NAMES[contract.declarer]}'s kitty` :
+              phase === 'chooseTrump' ? 'Kitty preview' :
+              phase === 'kitty' ? `${seatName(contract.declarer)}'s kitty` :
               'Kitty'
             }
           />
         )}
 
         {/* Kitty exchange panel for human declarer */}
-        {phase === 'kitty' && contract?.declarer === 'S' && (
+        {phase === 'kitty' && contract?.declarer === mySeat && (
           <KittyPanel
             kitty={kitty}
             picked={kittyDiscards.length}
@@ -540,14 +773,15 @@ function App() {
         {/* Bidding panel for human */}
         {phase === 'bidding' && (
           <BiddingPanel
-            myTurn={bidTurn === 'S'}
+            myTurn={bidTurn === mySeat}
             currentHigh={currentHigh}
             onBid={onMyBid}
             bids={bids}
+            seatName={seatName}
           />
         )}
 
-        {phase === 'chooseTrump' && contract?.declarer === 'S' && (
+        {phase === 'chooseTrump' && contract?.declarer === mySeat && (
           <TrumpPicker
             mode={contract.mode}
             level={contract.level}
@@ -560,10 +794,13 @@ function App() {
             phase={phase}
             turn={turn}
             bidTurn={bidTurn}
+            mySeat={mySeat}
             isMyTurn={isMyTurn}
             collecting={collecting}
             contract={contract}
-            onNewMatch={() => startMatch(matchHands)}
+            firstBidderPreview={firstBidderPreview}
+            seatName={seatName}
+            onNewMatch={() => { if (!isRemoteClient) startMatch(matchHands); }}
           />
         )}
 
@@ -578,7 +815,7 @@ function App() {
                 <span className="contract-mode">{contract.mode === 'low' ? 'L' : 'H'}</span>
               </div>
               <div className="reveal-name">
-                {SEAT_NAMES[contract.declarer]} {contract.declarer === 'S' ? 'declare' : 'declares'} •
+                {seatName(contract.declarer)} {contract.declarer === mySeat ? 'declare' : 'declares'} •
                 {' '}{contract.mode === 'low' ? 'Low' : 'High'} {SUIT_NAMES[contract.suit]} are trumps
               </div>
               <div className="reveal-sub">Need {contract.level + 5} tricks to make</div>
@@ -619,8 +856,39 @@ function lastBidFor(bids, seat) {
   return null;
 }
 
-function pos(seat) {
-  return { S: 'south', W: 'west', N: 'north', E: 'east' }[seat];
+function cleanPlayerName(name) {
+  const clean = String(name || '').trim().replace(/\s+/g, ' ').slice(0, 24);
+  return clean || randomPlayerName();
+}
+
+function randomPlayerName() {
+  const names = [
+    'Ace Morgan',
+    'Billie Clubs',
+    'Casey High',
+    'Drew Spades',
+    'Frankie Tricks',
+    'Harper Hearts',
+    'Jamie Trump',
+    'Quinn Diamonds',
+  ];
+  return names[Math.floor(Math.random() * names.length)];
+}
+
+function seatsFromPerspective(seat) {
+  const west = NEXT[seat];
+  const north = NEXT[west];
+  const east = NEXT[north];
+  return { south: seat, west, north, east };
+}
+
+function pos(seat, perspectiveSeat = 'S') {
+  const seats = seatsFromPerspective(perspectiveSeat);
+  if (seat === seats.south) return 'south';
+  if (seat === seats.west) return 'west';
+  if (seat === seats.north) return 'north';
+  if (seat === seats.east) return 'east';
+  return 'south';
 }
 
 function chooseTrumpSuit(hand) {
@@ -629,30 +897,41 @@ function chooseTrumpSuit(hand) {
     .sort((a, b) => b.score - a.score)[0].suit;
 }
 
-function DealingAnimation({ dealer, pattern }) {
+function DealingAnimation({ dealer, pattern, perspectiveSeat = 'S' }) {
   const seatOffset = {
-    S: { x: '0px', y: '34vh' },
-    W: { x: '-34vw', y: '0px' },
-    N: { x: '0px', y: '-34vh' },
-    E: { x: '34vw', y: '0px' },
+    south: { x: '0px', y: '34vh' },
+    west: { x: '-34vw', y: '0px' },
+    north: { x: '0px', y: '-34vh' },
+    east: { x: '34vw', y: '0px' },
   };
-  const order = [];
-  let seat = NEXT[dealer];
+  const deckSource = {
+    south: { x: '0px', y: '62vh' },
+    west: { x: '-62vw', y: '0px' },
+    north: { x: '0px', y: '-62vh' },
+    east: { x: '62vw', y: '0px' },
+  };
+  const clockwisePositions = ['south', 'west', 'north', 'east'];
+  const viewSeats = seatsFromPerspective(perspectiveSeat);
+  const seatsByPosition = Object.fromEntries(Object.entries(viewSeats).map(([position, seat]) => [position, seat]));
+  const dealerPosition = pos(dealer, perspectiveSeat);
+  const dealPositions = [];
+  let positionIndex = clockwisePositions.indexOf(dealerPosition);
   for (let i = 0; i < 48; i++) {
-    order.push(seat);
-    seat = NEXT[seat];
+    dealPositions.push(clockwisePositions[positionIndex]);
+    positionIndex = (positionIndex + 1) % clockwisePositions.length;
   }
-  const source = seatOffset[dealer];
+  const source = deckSource[dealerPosition];
   return (
     <div className="dealing-animation" aria-hidden="true">
       <div className="deal-stack" style={{ '--sx': source.x, '--sy': source.y }}>
         <CardBack pattern={pattern} />
       </div>
-      {order.map((seat, i) => (
+      {dealPositions.map((position, i) => (
         <div
           key={i}
-          className={`deal-card to-${pos(seat)}`}
-          style={{ '--sx': source.x, '--sy': source.y, animationDelay: `${i * 0.025}s` }}
+          className={`deal-card to-${position}`}
+          data-seat={seatsByPosition[position]}
+          style={{ '--sx': source.x, '--sy': source.y, animationDelay: `${i * 0.075}s` }}
         >
           <CardBack pattern={pattern} />
         </div>
@@ -661,8 +940,173 @@ function DealingAnimation({ dealer, pattern }) {
   );
 }
 
-function TopBar({ round, phase, matchHands, handsWon, multiplayer }) {
+function StartScreen({ onStartLocal, onHostGame, onJoinGame, multiplayerError, multiplayerStatus }) {
+  const [name, setName] = useState(() => window.localStorage.getItem('trumps_player_name') || randomPlayerName());
+  const [roomCode, setRoomCode] = useState('');
+  const canJoin = roomCode.trim().length > 0;
+
+  const useRandomName = () => {
+    const nextName = randomPlayerName();
+    setName(nextName);
+    window.localStorage.setItem('trumps_player_name', nextName);
+  };
+
+  const rememberName = () => {
+    const cleanName = cleanPlayerName(name);
+    setName(cleanName);
+    window.localStorage.setItem('trumps_player_name', cleanName);
+    return cleanName;
+  };
+
+  const submitJoin = () => {
+    if (!canJoin) return;
+    onJoinGame(roomCode, rememberName());
+  };
+
+  return (
+    <main className="start-screen">
+      <section className="start-panel" aria-labelledby="start-title">
+        <div className="start-copy">
+          <div className="start-brand">
+            <div className="brand-mark">♠</div>
+            <span>Trumps</span>
+          </div>
+          <h1 id="start-title">Choose a table</h1>
+          <p>Start a solo match against computer opponents, or host a room so other players can join with a code.</p>
+          <div className="start-name">
+            <label htmlFor="start-player-name">Player name</label>
+            <div className="start-name-row">
+              <input
+                id="start-player-name"
+                value={name}
+                onChange={e => setName(e.target.value)}
+                onBlur={rememberName}
+                maxLength="24"
+                placeholder="Your name"
+                aria-label="Player name"
+              />
+              <button className="start-random-btn" type="button" onClick={useRandomName}>
+                Random
+              </button>
+            </div>
+          </div>
+          <div className="start-actions">
+            <button className="start-choice" type="button" onClick={() => onStartLocal(rememberName())}>
+              <span>Play Local</span>
+              <small>Computer opponents</small>
+            </button>
+            <button className="start-choice" type="button" onClick={() => onHostGame(rememberName())}>
+              <span>Host Game</span>
+              <small>{multiplayerStatus === 'connecting' ? 'Opening room...' : 'Share a room code'}</small>
+            </button>
+          </div>
+          <div className="start-join">
+            <label htmlFor="start-room-code">Join a game</label>
+            <div className="start-join-row">
+              <input
+                id="start-room-code"
+                value={roomCode}
+                onChange={e => setRoomCode(e.target.value.toUpperCase())}
+                onKeyDown={e => { if (e.key === 'Enter') submitJoin(); }}
+                placeholder="Room code"
+                aria-label="Room code"
+              />
+              <button className="start-join-btn" type="button" onClick={submitJoin} disabled={!canJoin}>
+                Join
+              </button>
+            </div>
+          </div>
+          {multiplayerError && <div className="start-error">{multiplayerError}</div>}
+        </div>
+        <div className="start-table" aria-hidden="true">
+          <div className="start-felt" />
+        </div>
+      </section>
+    </main>
+  );
+}
+
+function LobbyScreen({ room, seat, isHost, error, onChooseSeat, onStart }) {
+  const roomCode = room?.code || '...';
+  const needsSeat = !seat;
+  const hasWaitingPlayers = Boolean(room?.waiting?.length);
+  const lobbySeatPositions = [
+    { seat: 'N', pos: 'top' },
+    { seat: 'E', pos: 'right' },
+    { seat: 'S', pos: 'bottom' },
+    { seat: 'W', pos: 'left' },
+  ];
+  const seatLabel = (nextSeat) => room?.seats?.[nextSeat]?.name || nextSeat;
+
+  return (
+    <main className="start-screen">
+      <section className="start-panel lobby-panel" aria-live="polite">
+        <div className="start-copy">
+          <div className="start-brand">
+            <div className="brand-mark">♠</div>
+            <span>Trumps</span>
+          </div>
+          <h1>{isHost ? 'Host lobby' : 'Table lobby'}</h1>
+          <p>{isHost ? 'Share the room code, wait for players to choose seats, then start the match.' : needsSeat ? 'Choose an open seat at the table. The host will start the match.' : 'Seat selected. The host will start the match.'}</p>
+          <div className="lobby-code">
+            <span>Room code</span>
+            <b>{roomCode}</b>
+          </div>
+          <div className="lobby-seats">
+            {SEATS.map(nextSeat => {
+              const player = room?.seats?.[nextSeat];
+              return (
+                <div key={nextSeat} className={`lobby-seat ${seat === nextSeat ? 'mine' : ''} ${player ? 'taken' : ''}`}>
+                  <span>{nextSeat}</span>
+                  <b>{player?.name || 'Open'}</b>
+                  {room?.hostSeat === nextSeat && <em>Host</em>}
+                </div>
+              );
+            })}
+          </div>
+          {!isHost && room?.waiting?.length > 0 && (
+            <div className="lobby-waiting">
+              Waiting: {room.waiting.map(player => player.name).join(', ')}
+            </div>
+          )}
+          {isHost ? (
+            <button className="start-choice primary lobby-start" type="button" onClick={onStart} disabled={!room || !seat || hasWaitingPlayers}>
+              <span>Start Match</span>
+              <small>{!seat ? 'Choose your seat' : hasWaitingPlayers ? 'Waiting for seats' : 'Deal the shared game'}</small>
+            </button>
+          ) : (
+            <div className="lobby-wait">Waiting for host to start</div>
+          )}
+          {error && <div className="start-error">{error}</div>}
+        </div>
+        <div className="start-table">
+          <div className="start-felt">
+            {lobbySeatPositions.map(({ seat: nextSeat, pos }) => {
+              const taken = Boolean(room?.seats?.[nextSeat]);
+              return (
+                <button
+                  key={nextSeat}
+                  type="button"
+                  className={`start-seat lobby-table-seat ${pos} ${taken ? 'taken' : ''} ${seat === nextSeat ? 'mine' : ''}`}
+                  disabled={!room || taken}
+                  onClick={() => onChooseSeat(nextSeat)}
+                  aria-label={taken ? `${seatLabel(nextSeat)} seated ${nextSeat}` : `Choose seat ${nextSeat}`}
+                >
+                  {seatLabel(nextSeat)}
+                </button>
+              );
+            })}
+          </div>
+        </div>
+      </section>
+    </main>
+  );
+}
+
+function TopBar({ round, phase, matchHands, handsWon, multiplayer, playMode, mySeat }) {
   const phaseLabel = phase === 'dealing' ? 'Dealing' : phase === 'bidding' ? 'Bidding' : phase === 'chooseTrump' ? 'Trump' : phase === 'reveal' ? 'Contract' : phase === 'play' ? 'In play' : phase === 'matchEnd' ? 'Match end' : 'Round end';
+  const myTeam = TEAM[mySeat || 'S'];
+  const oppTeam = OTHER_TEAM[myTeam];
   return (
     <div className="topbar">
       <div className="brand">
@@ -671,9 +1115,13 @@ function TopBar({ round, phase, matchHands, handsWon, multiplayer }) {
         <small>4 players</small>
       </div>
       <div className="topbar-meta">
-        <OnlineRoomControl multiplayer={multiplayer} />
+        {playMode === 'host' ? (
+          <OnlineRoomControl multiplayer={multiplayer} />
+        ) : (
+          <span className="local-room"><span className="pip offline" />Local bots</span>
+        )}
         <span>Hand {round} • {phaseLabel}</span>
-        <span>Best of {matchHands}: {handsWon.A}-{handsWon.B}</span>
+        <span>Best of {matchHands}: {handsWon[myTeam]}-{handsWon[oppTeam]}</span>
       </div>
     </div>
   );
@@ -741,7 +1189,7 @@ function CenterBadge({ phase, trump, contract, currentHigh }) {
   return null;
 }
 
-function Hud({ trump, round, turn, contract, phase }) {
+function Hud({ trump, round, turn, contract, phase, seatName }) {
   const isRed = trump === '♥' || trump === '♦';
   return (
     <div className="hud">
@@ -760,7 +1208,7 @@ function Hud({ trump, round, turn, contract, phase }) {
         <span className="hud-val">
           {contract ? (
             <>
-              {contract.level}{contract.suit && <span className={`contract-mini-suit ${contract.suit === '♥' || contract.suit === '♦' ? 'red' : ''}`}>{contract.suit}</span>}{contract.mode === 'low' ? ' Low' : ' High'} by {SEAT_NAMES[contract.declarer]}
+              {contract.level}{contract.suit && <span className={`contract-mini-suit ${contract.suit === '♥' || contract.suit === '♦' ? 'red' : ''}`}>{contract.suit}</span>}{contract.mode === 'low' ? ' Low' : ' High'} by {seatName(contract.declarer)}
             </>
           ) : '—'}
         </span>
@@ -773,16 +1221,28 @@ function Hud({ trump, round, turn, contract, phase }) {
   );
 }
 
-function ScoreCard({ teamA_tricks, teamB_tricks, teamScore, handsWon, matchHands, onMatchHandsChange, dealer, firstDealer, dealerDraw, contract }) {
+function ScoreCard({ teamA_tricks, teamB_tricks, teamScore, handsWon, matchHands, onMatchHandsChange, dealer, contract, mySeat, seatName }) {
   const need = contract ? contract.level + 5 : null;
   const matchToWin = Math.ceil(matchHands / 2);
-  const firstDealerCard = firstDealer ? dealerDraw?.[firstDealer] : null;
+  const myTeam = TEAM[mySeat];
+  const oppTeam = OTHER_TEAM[myTeam];
+  const tricksByTeam = { A: teamA_tricks, B: teamB_tricks };
+  const teamSeats = {
+    A: ['S', 'N'],
+    B: ['W', 'E'],
+  };
+  const teamLabel = (team) => teamSeats[team].map(seat => seatName(seat)).join(' & ');
+  const rows = [
+    { kind: 'you', label: 'Us', team: myTeam, tricks: tricksByTeam[myTeam], score: teamScore[myTeam] },
+    { kind: 'opp', label: 'Them', team: oppTeam, tricks: tricksByTeam[oppTeam], score: teamScore[oppTeam] },
+  ];
+
   return (
     <div className="score-card">
       <div className="match-row">
         <div>
           <div className="match-label">Match</div>
-          <div className="match-score">Hands {handsWon.A}-{handsWon.B} <span>first to {matchToWin}</span></div>
+          <div className="match-score">Hands {handsWon[myTeam]}-{handsWon[oppTeam]} <span>first to {matchToWin}</span></div>
         </div>
         <div className="match-options" aria-label="Match length">
           {[3, 5, 7].map(n => (
@@ -799,62 +1259,46 @@ function ScoreCard({ teamA_tricks, teamB_tricks, teamScore, handsWon, matchHands
       </div>
       <div className="dealer-row">
         <span>Dealer</span>
-        <b>{SEAT_NAMES[dealer]}</b>
-        {firstDealerCard && <em>first: {SEAT_NAMES[firstDealer]} {firstDealerCard.rank}{firstDealerCard.suit}</em>}
+        <b>{seatName(dealer)}</b>
       </div>
-      <div className="team-row you-team">
-        <div className="team-name">
-          <span className="team-dot" />
-          Us (You & Tess)
-          {contract && contract.team === 'A' && <span className="declarer-badge">Declarer</span>}
-        </div>
-        <div style={{ display: 'flex', gap: 10, alignItems: 'center' }}>
-          <div className="team-tricks">
-            {Array.from({length: 13}).map((_,i) => {
-              const filled = i < teamA_tricks;
-              const targetMark = need && contract.team === 'A' && i === need - 1;
-              return <div key={i} className={`trick-pip you ${filled ? 'filled' : ''} ${targetMark ? 'target' : ''}`} />;
-            })}
+      {rows.map(row => (
+        <div key={row.kind} className={`team-row ${row.kind === 'you' ? 'you-team' : 'opp-team'}`}>
+          <div className="team-name">
+            <span className="team-dot" />
+            {row.label} ({teamLabel(row.team)})
+            {contract && contract.team === row.team && <span className="declarer-badge">Declarer</span>}
           </div>
-          <span className="team-score">{teamScore.A}</span>
-        </div>
-      </div>
-      <div className="team-row opp-team">
-        <div className="team-name">
-          <span className="team-dot" />
-          Them (Marlowe & Aldo)
-          {contract && contract.team === 'B' && <span className="declarer-badge">Declarer</span>}
-        </div>
-        <div style={{ display: 'flex', gap: 10, alignItems: 'center' }}>
-          <div className="team-tricks">
-            {Array.from({length: 13}).map((_,i) => {
-              const filled = i < teamB_tricks;
-              const targetMark = need && contract.team === 'B' && i === need - 1;
-              return <div key={i} className={`trick-pip opp ${filled ? 'filled' : ''} ${targetMark ? 'target' : ''}`} />;
-            })}
+          <div style={{ display: 'flex', gap: 10, alignItems: 'center' }}>
+            <div className="team-tricks">
+              {Array.from({length: 13}).map((_,i) => {
+                const filled = i < row.tricks;
+                const targetMark = need && contract.team === row.team && i === need - 1;
+                return <div key={i} className={`trick-pip ${row.kind} ${filled ? 'filled' : ''} ${targetMark ? 'target' : ''}`} />;
+              })}
+            </div>
+            <span className="team-score">{row.score}</span>
           </div>
-          <span className="team-score">{teamScore.B}</span>
         </div>
-      </div>
+      ))}
     </div>
   );
 }
 
-function ActionBar({ phase, turn, bidTurn, isMyTurn, collecting, contract, onNewMatch }) {
+function ActionBar({ phase, turn, bidTurn, mySeat, isMyTurn, collecting, contract, firstBidderPreview, seatName, onNewMatch }) {
   let text;
   if (phase === 'dealing') {
     text = 'Dealing cards';
   } else if (phase === 'bidding') {
-    text = bidTurn === 'S' ? 'Your bid — call or pass' : `Waiting on ${SEAT_NAMES[bidTurn]} to bid…`;
+    text = bidTurn === mySeat ? 'Your bid - call or pass' : `Waiting on ${seatName(bidTurn)} to bid...`;
   } else if (phase === 'chooseTrump') {
-    text = 'Choose trump suit';
+    text = firstBidderPreview ? 'Review the kitty, then choose trump' : 'Choose trump suit';
   } else if (phase === 'reveal') {
     return null;
   } else if (phase === 'kitty') {
-    if (contract?.declarer === 'S') {
+    if (contract?.declarer === mySeat) {
       text = 'Pick 4 cards to discard';
     } else {
-      text = `${SEAT_NAMES[contract?.declarer]} is taking the kitty…`;
+      text = `${seatName(contract?.declarer)} is taking the kitty…`;
     }
   } else if (collecting) {
     text = 'Collecting trick…';
@@ -865,7 +1309,7 @@ function ActionBar({ phase, turn, bidTurn, isMyTurn, collecting, contract, onNew
   } else if (phase === 'matchEnd') {
     text = 'Match complete';
   } else {
-    text = `Waiting for ${SEAT_NAMES[turn]}…`;
+    text = `Waiting for ${seatName(turn)}…`;
   }
   return (
     <div className="action-bar">
@@ -918,9 +1362,9 @@ function TimerRing({ start, duration }) {
   );
 }
 
-function OppHand({ seat, count, pattern }) {
+function OppHand({ pos, count, pattern }) {
   return (
-    <div className={`opp-hand ${seat==='N'?'north':seat==='W'?'west':'east'}`}>
+    <div className={`opp-hand ${pos}`}>
       {Array.from({length: count}).map((_,i) => (
         <div key={i} className="opp-card"><CardBack pattern={pattern} /></div>
       ))}
@@ -1069,7 +1513,7 @@ function TrumpPicker({ mode, level, onChoose }) {
   );
 }
 
-function BiddingPanel({ myTurn, currentHigh, onBid, bids }) {
+function BiddingPanel({ myTurn, currentHigh, onBid, bids, seatName }) {
   // Build a 7×5 grid of possible bids; disable any not greater than currentHigh.
   // Bidding is one round: each player gets one call.
   // (Hand size is 12 after the kitty exchange. Tricks needed = level + 5, so a 7-bid means 12 of 12.)
@@ -1090,7 +1534,7 @@ function BiddingPanel({ myTurn, currentHigh, onBid, bids }) {
           <div className="bid-history-empty">No bids yet</div>
         ) : bids.map((b, i) => (
           <div key={i} className={`bid-chip ${b.pass ? 'pass' : ''}`}>
-            <span className="bc-seat">{SEAT_NAMES[b.seat].slice(0,1)}</span>
+            <span className="bc-seat">{seatName(b.seat).slice(0,1)}</span>
             <span className="bc-bid">{b.pass ? 'Pass' : `${b.level}${b.mode === 'low' ? 'L' : 'H'}`}</span>
           </div>
         ))}

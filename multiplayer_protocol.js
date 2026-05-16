@@ -4,12 +4,15 @@
   const CLIENT_EVENTS = {
     CREATE_ROOM: 'create_room',
     JOIN_ROOM: 'join_room',
+    CHOOSE_SEAT: 'choose_seat',
     LEAVE_ROOM: 'leave_room',
     START_MATCH: 'start_match',
     SUBMIT_BID: 'submit_bid',
     CHOOSE_TRUMP: 'choose_trump',
     DISCARD_KITTY: 'discard_kitty',
     PLAY_CARD: 'play_card',
+    SYNC_STATE: 'sync_state',
+    PLAYER_ACTION: 'player_action',
   };
 
   const SERVER_EVENTS = {
@@ -17,6 +20,7 @@
     ROOM_STATE: 'room_state',
     GAME_STATE: 'game_state',
     PRIVATE_HAND: 'private_hand',
+    PLAYER_ACTION: 'player_action',
     INVALID_ACTION: 'invalid_action',
     ERROR: 'error',
   };

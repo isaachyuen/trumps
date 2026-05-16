@@ -4,6 +4,8 @@ function useMultiplayerSession() {
   const [room, setRoom] = React.useState(null);
   const [seat, setSeat] = React.useState(null);
   const [error, setError] = React.useState(null);
+  const [gameState, setGameState] = React.useState(null);
+  const [playerActions, setPlayerActions] = React.useState([]);
   const socketRef = React.useRef(null);
 
   const connect = React.useCallback(() => {
@@ -29,6 +31,10 @@ function useMultiplayerSession() {
         setRoom(message.room);
         setSeat(message.seat);
         if (message.token) window.localStorage.setItem('trumps_player_token', message.token);
+      } else if (message.type === protocol.serverEvents.GAME_STATE) {
+        setGameState(message.state);
+      } else if (message.type === protocol.serverEvents.PLAYER_ACTION) {
+        setPlayerActions(actions => [...actions, { seat: message.seat, action: message.action, id: Date.now() + Math.random() }]);
       } else if (message.type === protocol.serverEvents.ERROR || message.type === protocol.serverEvents.INVALID_ACTION) {
         setError(message.message);
       }
@@ -44,25 +50,51 @@ function useMultiplayerSession() {
     else socket.addEventListener('open', transmit, { once: true });
   }, [connect]);
 
-  const createRoom = React.useCallback(() => {
+  const createRoom = React.useCallback((playerName = 'Host') => {
     send({
       type: protocol.clientEvents.CREATE_ROOM,
       seat: 'S',
-      name: 'Host',
+      waitForSeat: true,
+      name: playerName,
       token: window.localStorage.getItem('trumps_player_token'),
     });
   }, [protocol, send]);
 
-  const joinRoom = React.useCallback((roomCode) => {
+  const joinRoom = React.useCallback((roomCode, playerName = 'Guest', seat = '', waitForSeat = false) => {
     const code = protocol.normalizeRoomCode(roomCode);
     if (!code) return;
     send({
       type: protocol.clientEvents.JOIN_ROOM,
       roomCode: code,
-      name: 'Guest',
+      seat,
+      waitForSeat,
+      name: playerName,
       token: window.localStorage.getItem('trumps_player_token'),
     });
   }, [protocol, send]);
 
-  return { status, room, seat, error, createRoom, joinRoom };
+  const chooseSeat = React.useCallback((seat) => {
+    send({
+      type: protocol.clientEvents.CHOOSE_SEAT,
+      seat,
+    });
+  }, [protocol, send]);
+
+  const syncState = React.useCallback((state) => {
+    send({
+      type: protocol.clientEvents.SYNC_STATE,
+      state,
+    });
+  }, [protocol, send]);
+
+  const sendPlayerAction = React.useCallback((action) => {
+    send({
+      type: protocol.clientEvents.PLAYER_ACTION,
+      action,
+    });
+  }, [protocol, send]);
+
+  const clearPlayerActions = React.useCallback(() => setPlayerActions([]), []);
+
+  return { status, room, seat, error, gameState, playerActions, clearPlayerActions, createRoom, joinRoom, chooseSeat, syncState, sendPlayerAction };
 }

@@ -32,13 +32,26 @@ function publicRoom(room) {
       const player = room.seats[seat];
       return [seat, player ? { occupied: true, name: player.name, connected: player.connected } : null];
     })),
+    waiting: room.waiting.map(player => ({ name: player.name, connected: player.connected })),
     createdAt: room.createdAt,
   };
 }
 
 function broadcastRoom(room) {
-  for (const player of Object.values(room.seats)) {
+  for (const player of [...Object.values(room.seats), ...room.waiting]) {
     if (player?.socket) send(player.socket, protocol.serverEvents.ROOM_STATE, { room: publicRoom(room), seat: player.seat, token: player.token });
+  }
+}
+
+function broadcastGameState(room) {
+  if (!room.gameState) return;
+  for (const player of [...Object.values(room.seats), ...room.waiting]) {
+    if (player?.socket) {
+      send(player.socket, protocol.serverEvents.GAME_STATE, {
+        state: room.gameState,
+        updatedAt: room.updatedAt,
+      });
+    }
   }
 }
 
@@ -52,10 +65,18 @@ function createRoom() {
     code,
     seats: { S: null, W: null, N: null, E: null },
     hostSeat: null,
+    hostToken: null,
+    waiting: [],
     createdAt: Date.now(),
+    gameState: null,
+    updatedAt: null,
   };
   rooms.set(code, room);
   return room;
+}
+
+function removeWaiting(room, player) {
+  room.waiting = room.waiting.filter(next => next !== player);
 }
 
 function firstOpenSeat(room, preferredSeat) {
@@ -73,7 +94,30 @@ function joinRoom(ws, room, payload) {
     reconnect.socket = ws;
     reconnect.connected = true;
     ws.player = reconnect;
+    ws.room = room;
     broadcastRoom(room);
+    return;
+  }
+
+  if (payload.waitForSeat) {
+    const player = {
+      seat: null,
+      name: String(payload.name || 'Guest').slice(0, 24),
+      token: reconnectToken || cryptoToken(),
+      socket: ws,
+      connected: true,
+      waiting: true,
+    };
+    room.waiting.push(player);
+    ws.player = player;
+    ws.room = room;
+    broadcastRoom(room);
+    broadcastGameState(room);
+    return;
+  }
+
+  if (protocol.isSeat(payload.seat) && room.seats[payload.seat]) {
+    send(ws, protocol.serverEvents.ERROR, { message: 'Seat is already taken.' });
     return;
   }
 
@@ -91,10 +135,37 @@ function joinRoom(ws, room, payload) {
     connected: true,
   };
   room.seats[seat] = player;
-  if (!room.hostSeat) room.hostSeat = seat;
+  if (room.hostToken === player.token) room.hostSeat = seat;
   ws.player = player;
   ws.room = room;
   broadcastRoom(room);
+  broadcastGameState(room);
+}
+
+function chooseSeat(ws, payload) {
+  const room = ws.room;
+  const player = ws.player;
+  const seat = payload.seat;
+  if (!room || !player) {
+    send(ws, protocol.serverEvents.INVALID_ACTION, { message: 'Join a room before choosing a seat.' });
+    return;
+  }
+  if (!protocol.isSeat(seat)) {
+    send(ws, protocol.serverEvents.ERROR, { message: 'Choose a valid seat.' });
+    return;
+  }
+  if (room.seats[seat] && room.seats[seat] !== player) {
+    send(ws, protocol.serverEvents.ERROR, { message: 'Seat is already taken.' });
+    return;
+  }
+  if (player.seat && room.seats[player.seat] === player) room.seats[player.seat] = null;
+  removeWaiting(room, player);
+  player.seat = seat;
+  player.waiting = false;
+  room.seats[seat] = player;
+  if (room.hostToken === player.token) room.hostSeat = seat;
+  broadcastRoom(room);
+  broadcastGameState(room);
 }
 
 function cryptoToken() {
@@ -114,6 +185,11 @@ function handleMessage(ws, raw) {
     const room = createRoom();
     ws.room = room;
     joinRoom(ws, room, message);
+    if (ws.player) {
+      room.hostToken = ws.player.token;
+      room.hostSeat = ws.player.seat;
+      broadcastRoom(room);
+    }
     return;
   }
 
@@ -129,6 +205,43 @@ function handleMessage(ws, raw) {
     return;
   }
 
+  if (message.type === protocol.clientEvents.CHOOSE_SEAT) {
+    chooseSeat(ws, message);
+    return;
+  }
+
+  if (message.type === protocol.clientEvents.SYNC_STATE) {
+    const room = ws.room;
+    const player = ws.player;
+    if (!room || !player || player.token !== room.hostToken) {
+      send(ws, protocol.serverEvents.INVALID_ACTION, { message: 'Only the host can sync game state.' });
+      return;
+    }
+    room.gameState = message.state || null;
+    room.updatedAt = Date.now();
+    broadcastGameState(room);
+    return;
+  }
+
+  if (message.type === protocol.clientEvents.PLAYER_ACTION) {
+    const room = ws.room;
+    const player = ws.player;
+    if (!room || !player) {
+      send(ws, protocol.serverEvents.INVALID_ACTION, { message: 'Join a room before sending game actions.' });
+      return;
+    }
+    const host = room.seats[room.hostSeat];
+    if (!host?.socket) {
+      send(ws, protocol.serverEvents.ERROR, { message: 'Host is not connected.' });
+      return;
+    }
+    send(host.socket, protocol.serverEvents.PLAYER_ACTION, {
+      seat: player.seat,
+      action: message.action,
+    });
+    return;
+  }
+
   send(ws, protocol.serverEvents.INVALID_ACTION, {
     message: `${message.type || 'Unknown action'} is not wired to game state yet.`,
   });
@@ -140,6 +253,7 @@ function handleClose(ws) {
   if (!player || !room) return;
   player.connected = false;
   player.socket = null;
+  if (!player.seat) removeWaiting(room, player);
   broadcastRoom(room);
 }
 

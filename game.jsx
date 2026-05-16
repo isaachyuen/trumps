@@ -1,5 +1,5 @@
 // Game logic — pure functions, no React.
-// 4 players: South (you, team A) - West (B) - North (you's partner, A) - East (B)
+// 4 players: South/North are team A, West/East are team B.
 // Turn order: clockwise -> S, W, N, E
 
 const SUITS = ['♠', '♥', '♦', '♣'];
@@ -11,7 +11,7 @@ const LOW_SORT_RANK_VALUE = { ...RANK_VALUE, A: 1 };
 const SEATS = ['S', 'W', 'N', 'E'];
 const NEXT = { S: 'W', W: 'N', N: 'E', E: 'S' };
 const TEAM = { S: 'A', N: 'A', W: 'B', E: 'B' };
-const SEAT_NAMES = { S: 'You', W: 'Marlowe', N: 'Tess', E: 'Aldo' };
+const SEAT_NAMES = { S: 'South', W: 'West', N: 'North', E: 'East' };
 
 function buildDeck() {
   const deck = [];
