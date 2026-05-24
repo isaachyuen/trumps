@@ -6,7 +6,8 @@
   "main": "server.js",
   "scripts": {
     "start": "node server.js",
-    "check": "node --check server.js"
+    "check": "node --check server.js",
+    "smoke:browser": "node tests/browser_smoke_test.js"
   },
   "dependencies": {
     "ws": "^8.18.0"

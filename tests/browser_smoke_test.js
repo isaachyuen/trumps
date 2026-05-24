@@ -1,0 +1,401 @@
+const assert = require('assert');
+const childProcess = require('child_process');
+const fs = require('fs');
+const http = require('http');
+const net = require('net');
+const os = require('os');
+const path = require('path');
+const WebSocket = require('ws');
+
+const ROOT = path.resolve(__dirname, '..');
+const TIMEOUT_MS = 30000;
+
+async function main() {
+  const serverPort = await getFreePort();
+  const debugPort = await getFreePort();
+  const server = await startServer(serverPort);
+  const browser = await startBrowser(debugPort);
+
+  try {
+    const host = await openPage(debugPort, 'about:blank');
+    const guest = await openPage(debugPort, 'about:blank');
+
+    await initClient(host, serverPort);
+    await initClient(guest, serverPort);
+
+    await sendClient(host, {
+      type: 'create_room',
+      seat: 'S',
+      waitForSeat: true,
+      name: 'Smoke Host',
+    });
+    await waitFor(host, `window.smoke.latest('room_state')?.room?.code`);
+    const roomCode = await evalValue(host, `window.smoke.latest('room_state').room.code`);
+
+    await sendClient(guest, {
+      type: 'join_room',
+      roomCode,
+      seat: '',
+      waitForSeat: true,
+      name: 'Smoke Guest',
+    });
+    await waitFor(guest, `window.smoke.latest('room_state')?.room?.code === ${JSON.stringify(roomCode)}`);
+
+    await sendClient(host, { type: 'choose_seat', seat: 'S' });
+    await sendClient(guest, { type: 'choose_seat', seat: 'W' });
+    await waitFor(host, `
+      window.smoke.latest('room_state')?.room?.seats?.S?.name === 'Smoke Host' &&
+      window.smoke.latest('room_state')?.room?.seats?.W?.name === 'Smoke Guest' &&
+      window.smoke.latest('room_state')?.room?.hostSeat === 'S'
+    `);
+    await waitFor(guest, `
+      window.smoke.latest('room_state')?.room?.seats?.S?.name === 'Smoke Host' &&
+      window.smoke.latest('room_state')?.room?.seats?.W?.name === 'Smoke Guest' &&
+      window.smoke.latest('room_state')?.room?.hostSeat === 'S'
+    `);
+
+    const hostState = makeStartedMatchState();
+    await sendClient(host, {
+      type: 'sync_state',
+      state: hostState,
+    });
+    await waitFor(guest, `
+      JSON.stringify(window.smoke.latest('game_state')?.state) === ${JSON.stringify(JSON.stringify(hostState))}
+    `);
+
+    const guestState = await evalValue(guest, `window.smoke.latest('game_state').state`);
+
+    assert.deepStrictEqual(guestState, hostState);
+    assert.strictEqual(hostState.round, 1);
+    assert.strictEqual(hostState.matchHands, 3);
+    assert.ok(hostState.hands.S.length > 0, 'host state includes dealt hands');
+    assert.ok(hostState.hands.W.length > 0, 'guest seat hand is included in synchronized state');
+
+    console.log(`browser smoke ok: room ${roomCode}, phase ${hostState.phase}, dealer ${hostState.dealer}`);
+  } finally {
+    await closeBrowser(browser);
+    server.kill();
+  }
+}
+
+function makeStartedMatchState() {
+  return {
+    phase: 'dealing',
+    hands: {
+      S: [{ suit: '♠', rank: 'A', id: 'A♠' }],
+      W: [{ suit: '♥', rank: 'K', id: 'K♥' }],
+      N: [{ suit: '♣', rank: 'Q', id: 'Q♣' }],
+      E: [{ suit: '♦', rank: 'J', id: 'J♦' }],
+    },
+    kitty: [{ suit: '♠', rank: '2', id: '2♠' }],
+    kittyRevealed: false,
+    trump: null,
+    contract: null,
+    bids: [],
+    bidMode: 'high',
+    bidTurn: 'W',
+    trickPlays: [],
+    collecting: false,
+    collectingSeat: null,
+    turn: 'W',
+    tricksWon: { S: 0, W: 0, N: 0, E: 0 },
+    teamScore: { A: 0, B: 0 },
+    handsWon: { A: 0, B: 0 },
+    matchHands: 3,
+    round: 1,
+    turnStart: 123456789,
+    dealer: 'S',
+    dealerDraw: null,
+    firstDealer: 'S',
+    nextDealerByTeam: { A: 'N', B: 'W' },
+    nextRoundDealer: null,
+    toast: 'High-card draw: Smoke Host deals first',
+  };
+}
+
+function getFreePort() {
+  return new Promise((resolve, reject) => {
+    const server = net.createServer();
+    server.once('error', reject);
+    server.listen(0, '127.0.0.1', () => {
+      const { port } = server.address();
+      server.close(() => resolve(port));
+    });
+  });
+}
+
+function startServer(port) {
+  return new Promise((resolve, reject) => {
+    const server = childProcess.spawn(process.execPath, ['server.js'], {
+      cwd: ROOT,
+      env: { ...process.env, HOST: '127.0.0.1', PORT: String(port) },
+      stdio: ['ignore', 'pipe', 'pipe'],
+    });
+    const timer = setTimeout(() => {
+      server.kill();
+      reject(new Error('Timed out waiting for test server'));
+    }, TIMEOUT_MS);
+    server.once('error', reject);
+    server.stdout.on('data', chunk => {
+      if (String(chunk).includes(`:${port}`)) {
+        clearTimeout(timer);
+        resolve(server);
+      }
+    });
+    server.stderr.on('data', chunk => process.stderr.write(chunk));
+  });
+}
+
+async function startBrowser(debugPort) {
+  const executable = findBrowser();
+  const userDataDir = fs.mkdtempSync(path.join(os.tmpdir(), 'trumps-browser-smoke-'));
+  const browser = childProcess.spawn(executable, [
+    `--remote-debugging-port=${debugPort}`,
+    `--user-data-dir=${userDataDir}`,
+    '--headless=new',
+    '--disable-gpu',
+    '--disable-software-rasterizer',
+    '--disable-gpu-compositing',
+    '--in-process-gpu',
+    '--no-sandbox',
+    '--no-first-run',
+    '--no-default-browser-check',
+    '--disable-background-networking',
+    'about:blank',
+  ], { stdio: ['ignore', 'ignore', 'pipe'] });
+
+  browser.userDataDir = userDataDir;
+  let stderr = '';
+  browser.stderr.on('data', chunk => {
+    stderr += String(chunk);
+  });
+  await Promise.race([
+    waitForHttp(`http://127.0.0.1:${debugPort}/json/version`),
+    new Promise((_, reject) => {
+      browser.once('exit', code => {
+        reject(new Error(`Browser exited during startup with ${code}${stderr ? `\n${stderr}` : ''}`));
+      });
+    }),
+  ]);
+  return browser;
+}
+
+async function closeBrowser(browser) {
+  if (!browser) return;
+  browser.kill();
+  await new Promise(resolve => browser.once('exit', resolve));
+  if (browser.userDataDir) {
+    fs.rmSync(browser.userDataDir, { recursive: true, force: true });
+  }
+}
+
+function findBrowser() {
+  const explicit = process.env.BROWSER_PATH || process.env.CHROME_PATH || process.env.EDGE_PATH;
+  const candidates = [
+    explicit,
+    'C:\\Program Files\\Google\\Chrome\\Application\\chrome.exe',
+    'C:\\Program Files (x86)\\Google\\Chrome\\Application\\chrome.exe',
+    'C:\\Program Files\\Microsoft\\Edge\\Application\\msedge.exe',
+    'C:\\Program Files (x86)\\Microsoft\\Edge\\Application\\msedge.exe',
+    '/Applications/Google Chrome.app/Contents/MacOS/Google Chrome',
+    '/Applications/Microsoft Edge.app/Contents/MacOS/Microsoft Edge',
+    '/usr/bin/google-chrome',
+    '/usr/bin/google-chrome-stable',
+    '/usr/bin/chromium',
+    '/usr/bin/chromium-browser',
+    '/usr/bin/microsoft-edge',
+  ].filter(Boolean);
+  const found = candidates.find(candidate => fs.existsSync(candidate));
+  if (!found) {
+    throw new Error('No Chromium browser found. Set BROWSER_PATH, CHROME_PATH, or EDGE_PATH to run the smoke test.');
+  }
+  return found;
+}
+
+async function openPage(debugPort, url) {
+  const target = await requestJson({
+    hostname: '127.0.0.1',
+    port: debugPort,
+    path: `/json/new?${encodeURIComponent(url)}`,
+    method: 'PUT',
+  });
+  const ws = new WebSocket(target.webSocketDebuggerUrl);
+  await new Promise((resolve, reject) => {
+    ws.once('open', resolve);
+    ws.once('error', reject);
+  });
+  const page = createCdpPage(ws);
+  await page.send('Runtime.enable');
+  await page.send('Page.enable');
+  await page.send('Page.bringToFront');
+  await waitFor(page, `document.readyState === 'complete'`);
+  return page;
+}
+
+function initClient(page, serverPort) {
+  return evalValue(page, `
+    new Promise((resolve, reject) => {
+      const ws = new WebSocket('ws://127.0.0.1:${serverPort}/ws');
+      window.smoke = {
+        ws,
+        events: [],
+        latest(type) {
+          return [...this.events].reverse().find(event => event.type === type) || null;
+        },
+      };
+      ws.onmessage = event => window.smoke.events.push(JSON.parse(event.data));
+      ws.onopen = () => resolve(true);
+      ws.onerror = () => reject(new Error('Smoke WebSocket failed'));
+    })
+  `);
+}
+
+function sendClient(page, message) {
+  return evalValue(page, `
+    (() => {
+      window.smoke.ws.send(${JSON.stringify(JSON.stringify(message))});
+      return true;
+    })()
+  `);
+}
+
+function createCdpPage(ws) {
+  let id = 0;
+  const pending = new Map();
+  ws.on('message', raw => {
+    const message = JSON.parse(raw);
+    if (!message.id) return;
+    const handlers = pending.get(message.id);
+    if (!handlers) return;
+    pending.delete(message.id);
+    if (message.error) handlers.reject(new Error(message.error.message));
+    else handlers.resolve(message.result);
+  });
+  return {
+    send(method, params = {}) {
+      const nextId = ++id;
+      ws.send(JSON.stringify({ id: nextId, method, params }));
+      return new Promise((resolve, reject) => pending.set(nextId, { resolve, reject }));
+    },
+    close() {
+      ws.close();
+    },
+  };
+}
+
+async function evalValue(page, expression) {
+  const result = await page.send('Runtime.evaluate', {
+    expression,
+    awaitPromise: true,
+    returnByValue: true,
+    userGesture: true,
+  });
+  if (result.exceptionDetails) {
+    throw new Error(result.exceptionDetails.text || 'Browser evaluation failed');
+  }
+  return result.result.value;
+}
+
+async function waitFor(page, expression, timeoutMs = TIMEOUT_MS) {
+  const start = Date.now();
+  let lastError;
+  while (Date.now() - start < timeoutMs) {
+    try {
+      if (await evalValue(page, `Boolean(${expression})`)) return;
+    } catch (error) {
+      lastError = error;
+    }
+    await delay(100);
+  }
+  throw new Error(`Timed out waiting for browser condition: ${expression}${lastError ? ` (${lastError.message})` : ''}`);
+}
+
+function fill(page, selector, value) {
+  return evalValue(page, `
+    (() => {
+      const input = document.querySelector(${JSON.stringify(selector)});
+      if (!input) throw new Error('Missing input ${selector}');
+      const setter = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value').set;
+      setter.call(input, ${JSON.stringify(value)});
+      input.dispatchEvent(new Event('input', { bubbles: true }));
+      input.dispatchEvent(new Event('change', { bubbles: true }));
+      input.blur();
+      return true;
+    })()
+  `);
+}
+
+function click(page, selector) {
+  return evalValue(page, `
+    (() => {
+      const element = document.querySelector(${JSON.stringify(selector)});
+      if (!element) throw new Error('Missing element ${selector}');
+      element.click();
+      return true;
+    })()
+  `);
+}
+
+function clickButtonByText(page, text) {
+  return evalValue(page, `
+    (() => {
+      const button = [...document.querySelectorAll('button')]
+        .find(next => next.textContent.trim().includes(${JSON.stringify(text)}));
+      if (!button) throw new Error('Missing button ${text}');
+      button.click();
+      return true;
+    })()
+  `);
+}
+
+async function smokeStateJson(page) {
+  return evalValue(page, `JSON.stringify(window.__TRUMPS_SMOKE_STATE__)`);
+}
+
+async function smokeState(page) {
+  return JSON.parse(await smokeStateJson(page));
+}
+
+function waitForHttp(url) {
+  const started = Date.now();
+  return new Promise((resolve, reject) => {
+    const attempt = () => {
+      http.get(url, res => {
+        res.resume();
+        resolve();
+      }).on('error', error => {
+        if (Date.now() - started > TIMEOUT_MS) reject(error);
+        else setTimeout(attempt, 100);
+      });
+    };
+    attempt();
+  });
+}
+
+function requestJson(options) {
+  return new Promise((resolve, reject) => {
+    const req = http.request(options, res => {
+      let body = '';
+      res.setEncoding('utf8');
+      res.on('data', chunk => { body += chunk; });
+      res.on('end', () => {
+        try {
+          resolve(JSON.parse(body));
+        } catch (error) {
+          reject(error);
+        }
+      });
+    });
+    req.on('error', reject);
+    req.end();
+  });
+}
+
+function delay(ms) {
+  return new Promise(resolve => setTimeout(resolve, ms));
+}
+
+main().catch(error => {
+  console.error(error);
+  process.exit(1);
+});
