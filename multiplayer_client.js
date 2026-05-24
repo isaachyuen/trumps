@@ -98,3 +98,5 @@ function useMultiplayerSession() {
 
   return { status, room, seat, error, gameState, playerActions, clearPlayerActions, createRoom, joinRoom, chooseSeat, syncState, sendPlayerAction };
 }
+
+Object.assign(window, { useMultiplayerSession });
