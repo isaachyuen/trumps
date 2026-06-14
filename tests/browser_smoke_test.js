@@ -79,6 +79,10 @@ async function main() {
 
     await evalValue(host, `window.smoke.ws.close()`);
     await waitFor(guest, `
+      window.smoke.latest('room_state')?.room?.hostSeat === 'W' &&
+      window.smoke.latest('room_state')?.isHost === true
+    `);
+    await waitFor(guest, `
       window.smoke.latest('game_state')?.revision > ${revisionBeforeDisconnect}
     `);
     const progressed = await evalValue(guest, `window.smoke.latest('game_state')`);
@@ -112,6 +116,140 @@ async function main() {
       document.querySelector('.center-disc.bidding')?.textContent?.includes('Auction')
     `);
 
+    const transferOwner = await openPage(debugPort, 'about:blank');
+    const transferGuest = await openPage(debugPort, 'about:blank');
+    await initClient(transferOwner, serverPort);
+    await initClient(transferGuest, serverPort);
+    await sendClient(transferOwner, {
+      type: 'create_room',
+      waitForSeat: true,
+      name: 'Transfer Owner',
+    });
+    await waitFor(transferOwner, `window.smoke.latest('room_state')?.room?.code`);
+    const transferCode = await evalValue(transferOwner, `window.smoke.latest('room_state').room.code`);
+    await sendClient(transferGuest, {
+      type: 'join_room',
+      roomCode: transferCode,
+      waitForSeat: true,
+      name: 'Transfer Guest',
+    });
+    await waitFor(transferGuest, `window.smoke.latest('room_state')?.room?.code === ${JSON.stringify(transferCode)}`);
+    await sendClient(transferOwner, { type: 'choose_seat', seat: 'S' });
+    await sendClient(transferGuest, { type: 'choose_seat', seat: 'W' });
+    await waitFor(transferGuest, `window.smoke.latest('room_state')?.room?.hostSeat === 'S'`);
+    await evalValue(transferOwner, `window.smoke.ws.close()`);
+    await waitFor(transferGuest, `
+      window.smoke.latest('room_state')?.room?.hostSeat === 'W' &&
+      window.smoke.latest('room_state')?.isHost === true
+    `);
+    await sendClient(transferGuest, {
+      type: 'start_match',
+      actionId: 'transferred-host-start',
+      expectedRevision: 0,
+      matchHands: 3,
+    });
+    await waitFor(transferGuest, `window.smoke.latest('game_state')?.revision >= 1`);
+
+    const uiTransferOwner = await openPage(debugPort, 'about:blank');
+    const transferGuestApp = await openPage(debugPort, `http://localhost:${serverPort}/trumps_table.html`);
+    await initClient(uiTransferOwner, serverPort);
+    await waitFor(transferGuestApp, `document.querySelector('#start-title')`);
+    await sendClient(uiTransferOwner, {
+      type: 'create_room',
+      waitForSeat: true,
+      name: 'UI Transfer Host',
+    });
+    await waitFor(uiTransferOwner, `window.smoke.latest('room_state')?.room?.code`);
+    const uiTransferCode = await evalValue(uiTransferOwner, `window.smoke.latest('room_state').room.code`);
+    await sendClient(uiTransferOwner, { type: 'choose_seat', seat: 'S' });
+    await waitFor(uiTransferOwner, `window.smoke.latest('room_state')?.seat === 'S'`);
+
+    await fill(transferGuestApp, '#start-player-name', 'UI Transfer Guest');
+    await fill(transferGuestApp, '#start-room-code', uiTransferCode);
+    await clickButtonByText(transferGuestApp, 'Join');
+    await waitFor(transferGuestApp, `
+      document.querySelector('.lobby-code b')?.textContent === ${JSON.stringify(uiTransferCode)}
+    `);
+    const uiTransferSeatEnabled = await evalValue(
+      transferGuestApp,
+      `!document.querySelector('button[aria-label="Choose seat W"]').disabled`,
+    );
+    assert.strictEqual(uiTransferSeatEnabled, true, 'promoted-host guest seat button should be enabled');
+    await click(transferGuestApp, 'button[aria-label="Choose seat W"]');
+    await waitFor(uiTransferOwner, `
+      window.smoke.latest('room_state')?.room?.seats?.W?.name === 'UI Transfer Guest'
+    `);
+    await waitFor(transferGuestApp, `
+      document.querySelector('.lobby-panel h1')?.textContent === 'Table lobby' &&
+      document.querySelector('.lobby-seat.mine')?.textContent?.includes('W')
+    `);
+
+    await evalValue(uiTransferOwner, `window.smoke.ws.close()`);
+    await waitFor(transferGuestApp, `
+      document.querySelector('.lobby-panel h1')?.textContent === 'Host lobby' &&
+      document.querySelector('.lobby-start') &&
+      !document.querySelector('.lobby-start').disabled
+    `);
+
+    const abandonedOwner = await openPage(debugPort, 'about:blank');
+    const abandonedJoiner = await openPage(debugPort, 'about:blank');
+    await initClient(abandonedOwner, serverPort);
+    await sendClient(abandonedOwner, {
+      type: 'create_room',
+      waitForSeat: true,
+      name: 'Abandoned Owner',
+    });
+    await waitFor(abandonedOwner, `window.smoke.latest('room_state')?.room?.code`);
+    const abandonedCode = await evalValue(abandonedOwner, `window.smoke.latest('room_state').room.code`);
+    await evalValue(abandonedOwner, `window.smoke.ws.close()`);
+    await delay(1200);
+
+    await initClient(abandonedJoiner, serverPort);
+    await sendClient(abandonedJoiner, {
+      type: 'join_room',
+      roomCode: abandonedCode,
+      waitForSeat: true,
+      name: 'Late Joiner',
+    });
+    await waitFor(abandonedJoiner, `window.smoke.latest('error')?.message === 'Room not found.'`);
+
+    const reconnectOwner = await openPage(debugPort, 'about:blank');
+    const reconnectClient = await openPage(debugPort, 'about:blank');
+    const reconnectVerifier = await openPage(debugPort, 'about:blank');
+    await initClient(reconnectOwner, serverPort);
+    await sendClient(reconnectOwner, {
+      type: 'create_room',
+      waitForSeat: true,
+      name: 'Reconnect Owner',
+    });
+    await waitFor(reconnectOwner, `window.smoke.latest('room_state')?.room?.code`);
+    const reconnectCode = await evalValue(reconnectOwner, `window.smoke.latest('room_state').room.code`);
+    await sendClient(reconnectOwner, { type: 'choose_seat', seat: 'S' });
+    await waitFor(reconnectOwner, `window.smoke.latest('room_state')?.seat === 'S'`);
+    const reconnectToken = await evalValue(reconnectOwner, `window.smoke.latest('room_state').token`);
+    await evalValue(reconnectOwner, `window.smoke.ws.close()`);
+    await delay(400);
+
+    await initClient(reconnectClient, serverPort);
+    await sendClient(reconnectClient, {
+      type: 'join_room',
+      roomCode: reconnectCode,
+      token: reconnectToken,
+      waitForSeat: true,
+      name: 'Reconnect Owner',
+    });
+    await waitFor(reconnectClient, `window.smoke.latest('room_state')?.seat === 'S'`);
+    await delay(800);
+
+    await initClient(reconnectVerifier, serverPort);
+    await sendClient(reconnectVerifier, {
+      type: 'join_room',
+      roomCode: reconnectCode,
+      waitForSeat: true,
+      name: 'Reconnect Verifier',
+    });
+    await waitFor(reconnectVerifier, `window.smoke.latest('room_state')?.room?.code === ${JSON.stringify(reconnectCode)}`);
+
     console.log(`browser smoke ok: room ${roomCode}, phase ${progressed.state.phase}, revision ${progressed.revision}`);
   } finally {
     await closeBrowser(browser);
@@ -134,7 +272,13 @@ function startServer(port) {
   return new Promise((resolve, reject) => {
     const server = childProcess.spawn(process.execPath, ['server.js'], {
       cwd: ROOT,
-      env: { ...process.env, HOST: '127.0.0.1', PORT: String(port), TRUMPS_TIMER_SCALE: '0.1' },
+      env: {
+        ...process.env,
+        HOST: '127.0.0.1',
+        PORT: String(port),
+        TRUMPS_TIMER_SCALE: '0.1',
+        TRUMPS_ABANDONED_ROOM_TTL_MS: '1000',
+      },
       stdio: ['ignore', 'pipe', 'pipe'],
     });
     const timer = setTimeout(() => {

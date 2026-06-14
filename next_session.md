@@ -29,7 +29,7 @@ The frontend loads React and Babel from CDNs, so internet access is required unl
 - `styles.css`: application styling and animations.
 - `multiplayer_protocol.js`: protocol version, event names, seats, and room-code helpers.
 - `multiplayer_client.js`: browser WebSocket hook and explicit game commands.
-- `server.js`: static server, rooms, reconnect tokens, authoritative matches, revisions, and scheduling.
+- `server.js`: static server, rooms, reconnect tokens, authoritative matches, revisions, scheduling, and abandoned-room cleanup.
 - `tests/game_engine_test.js`: engine, validation, privacy, and bot-match tests.
 - `tests/browser_smoke_test.js`: WebSocket and real browser integration test.
 
@@ -56,7 +56,9 @@ The Node server owns the canonical online match.
 - Opponent hands are represented by hidden placeholder cards; complete hands are never broadcast to every client.
 - Bots and phase timers run on the server.
 - Match progression continues if the original host disconnects.
+- If the host disconnects, ownership transfers to the first connected seated player in `S/W/N/E` order, or to the first connected waiting player when nobody is seated.
 - A reconnecting seated player can reclaim the seat with the token stored in browser `localStorage`.
+- When the final connected player leaves, the room is deleted after `TRUMPS_ABANDONED_ROOM_TTL_MS` (30 minutes by default). A reconnect during that grace period cancels cleanup.
 
 The host role is now limited to lobby ownership and starting a match. It does not grant authority over gameplay.
 
@@ -109,6 +111,10 @@ git diff --check
 - Room creation, joining, and seat selection.
 - Server-created match state and per-seat privacy.
 - Server progression after host disconnect.
+- Deterministic host transfer before and during a match.
+- Promoted-host controls in the real React lobby.
+- Abandoned-room expiry after the configured grace period.
+- Reconnect cancellation of pending room cleanup.
 - Real HTML/Babel/React rendering through host, seat selection, and match start.
 
 The browser test requires access to the React and Babel CDNs used by `trumps_table.html`.
@@ -117,23 +123,39 @@ The browser test requires access to the React and Babel CDNs used by `trumps_tab
 
 - Rooms and matches are in memory and disappear when the server restarts.
 - Reconnect tokens are prototype identifiers generated with `Math.random`, not secure authentication.
-- The host token remains required to start another match; there is no host transfer workflow.
+- Disconnected seated players remain reserved indefinitely while at least one player keeps the room active.
+- A promoted host can start a match, but there is no explicit host-transfer control or host-independent rematch protocol.
 - There is no production persistence, account system, rate limiting, or deployment configuration.
 - Automated tests cover architecture and smoke behavior, but not every scoring, kitty, and reconnect edge case.
 
 ## Next Priorities
 
 1. Add focused engine tests for full bidding order, kitty entitlement, following suit, scoring, dealer rotation, duplicate actions, and stale revisions.
-2. Add room cleanup, reconnect expiry, and host transfer or host-independent rematch controls.
-3. Replace prototype reconnect tokens with cryptographically secure session identifiers before public deployment.
-4. Add persistent room or match storage only if restart recovery is required.
+2. Expire disconnected player reservations and reconnect tokens after a configurable grace period.
+3. Add host-independent rematch controls.
+4. Replace prototype reconnect tokens with cryptographically secure session identifiers before public deployment.
+5. Add persistent room or match storage only if restart recovery is required.
 
 ## Git State
 
-The checkout is based on:
+Current branch:
 
 ```text
-c8a8ded Merge pull request #1 from isaachyuen/codex-refactor-game-state-bots
+codex/server-authoritative-multiplayer
 ```
 
-The server-authoritative multiplayer implementation and this handoff update are currently local changes. Check `git status -sb` before publishing.
+Latest commits:
+
+```text
+c429d29 Add room cleanup and host transfer
+20fc4a9 Consolidate local and server game engines
+da66cb7 Make multiplayer server authoritative
+```
+
+Draft pull request:
+
+```text
+https://github.com/isaachyuen/trumps/pull/4
+```
+
+Check `git status -sb` and the pull request state before starting or publishing additional work.

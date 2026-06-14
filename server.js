@@ -8,6 +8,10 @@ const gameEngine = require('./shared/game_engine');
 const PORT = Number(process.env.PORT || 8001);
 const HOST = process.env.HOST || '0.0.0.0';
 const TIMER_SCALE = Math.max(0, Number(process.env.TRUMPS_TIMER_SCALE || 1));
+const configuredRoomTtl = Number(process.env.TRUMPS_ABANDONED_ROOM_TTL_MS);
+const ABANDONED_ROOM_TTL_MS = Number.isFinite(configuredRoomTtl)
+  ? Math.max(1000, configuredRoomTtl)
+  : 30 * 60 * 1000;
 const ROOT = __dirname;
 
 const contentTypes = {
@@ -28,6 +32,64 @@ function send(ws, type, payload = {}) {
 
 function roomPlayers(room) {
   return [...Object.values(room.seats), ...room.waiting].filter(Boolean);
+}
+
+function connectedPlayers(room) {
+  return roomPlayers(room).filter(player => player.connected && player.socket);
+}
+
+function nextHost(room) {
+  for (const seat of protocol.seats) {
+    const player = room.seats[seat];
+    if (player?.connected && player.socket) return player;
+  }
+  return room.waiting.find(player => player.connected && player.socket) || null;
+}
+
+function transferHost(room) {
+  const host = nextHost(room);
+  room.hostToken = host?.token || null;
+  room.hostSeat = host?.seat || null;
+  return host;
+}
+
+function ensureHost(room) {
+  const currentHost = roomPlayers(room).find(player =>
+    player.token === room.hostToken && player.connected && player.socket);
+  return currentHost || transferHost(room);
+}
+
+function cancelRoomCleanup(room) {
+  if (!room.cleanupTimer) return;
+  clearTimeout(room.cleanupTimer);
+  room.cleanupTimer = null;
+  room.abandonedAt = null;
+}
+
+function destroyRoom(room) {
+  if (rooms.get(room.code) !== room) return;
+  if (room.timer) clearTimeout(room.timer);
+  if (room.cleanupTimer) clearTimeout(room.cleanupTimer);
+  room.timer = null;
+  room.cleanupTimer = null;
+  rooms.delete(room.code);
+}
+
+function scheduleRoomCleanup(room) {
+  if (connectedPlayers(room).length > 0) {
+    cancelRoomCleanup(room);
+    return;
+  }
+  if (room.cleanupTimer) return;
+  room.abandonedAt = Date.now();
+  room.cleanupTimer = setTimeout(() => {
+    room.cleanupTimer = null;
+    if (connectedPlayers(room).length > 0) {
+      room.abandonedAt = null;
+      return;
+    }
+    destroyRoom(room);
+  }, ABANDONED_ROOM_TTL_MS);
 }
 
 function publicRoom(room) {
@@ -51,6 +113,7 @@ function broadcastRoom(room) {
         room: publicRoom(room),
         seat: player.seat,
         token: player.token,
+        isHost: player.token === room.hostToken,
       });
     }
   }
@@ -85,6 +148,8 @@ function createRoom() {
     gameState: null,
     revision: 0,
     timer: null,
+    cleanupTimer: null,
+    abandonedAt: null,
     actionIds: new Set(),
   };
   rooms.set(code, room);
@@ -108,16 +173,19 @@ function joinRoom(ws, room, payload) {
   const reconnectToken = String(payload.token || '');
   const reconnect = roomPlayers(room).find(player => player.token === reconnectToken);
   if (reconnect) {
+    cancelRoomCleanup(room);
     reconnect.socket = ws;
     reconnect.connected = true;
     ws.player = reconnect;
     ws.room = room;
+    ensureHost(room);
     broadcastRoom(room);
     if (room.gameState) broadcastGameState(room);
     return;
   }
 
   if (payload.waitForSeat) {
+    cancelRoomCleanup(room);
     const player = {
       seat: null,
       name: String(payload.name || 'Guest').slice(0, 24),
@@ -129,6 +197,7 @@ function joinRoom(ws, room, payload) {
     room.waiting.push(player);
     ws.player = player;
     ws.room = room;
+    ensureHost(room);
     broadcastRoom(room);
     if (room.gameState) broadcastGameState(room);
     return;
@@ -146,9 +215,11 @@ function joinRoom(ws, room, payload) {
     socket: ws,
     connected: true,
   };
+  cancelRoomCleanup(room);
   room.seats[seat] = player;
   ws.player = player;
   ws.room = room;
+  ensureHost(room);
   broadcastRoom(room);
   if (room.gameState) broadcastGameState(room);
 }
@@ -350,7 +421,9 @@ function handleClose(ws) {
   player.connected = false;
   player.socket = null;
   if (!player.seat) removeWaiting(room, player);
+  if (player.token === room.hostToken) transferHost(room);
   broadcastRoom(room);
+  scheduleRoomCleanup(room);
 }
 
 function serveStatic(req, res) {
