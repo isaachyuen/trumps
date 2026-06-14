@@ -93,6 +93,49 @@
     return winningPlay(trick, trump, low).seat;
   }
 
+  function sortWeakestFirst(cards, low = false) {
+    return [...cards].sort((left, right) =>
+      low ? cardValue(right, true) - cardValue(left, true) : cardValue(left) - cardValue(right));
+  }
+
+  function sortStrongestFirst(cards, low = false) {
+    return [...cards].sort((left, right) =>
+      low ? cardValue(left, true) - cardValue(right, true) : cardValue(right) - cardValue(left));
+  }
+
+  function remainingCardsBySuit(hand, trick, playedCards = []) {
+    const known = new Set([...hand, ...trick.map(play => play.card), ...playedCards].map(card => card.id));
+    const remaining = Object.fromEntries(SUITS.map(suit => [suit, []]));
+    for (const card of buildDeck()) {
+      if (!known.has(card.id)) remaining[card.suit].push(card);
+    }
+    return remaining;
+  }
+
+  function isLikelyBoss(card, remainingBySuit, low = false) {
+    return !remainingBySuit[card.suit].some(other =>
+      low ? cardValue(other, true) < cardValue(card, true) : cardValue(other) > cardValue(card));
+  }
+
+  function chooseCheapest(cards, low = false) {
+    return sortWeakestFirst(cards, low)[0];
+  }
+
+  function chooseCheapestWinner(cards, currentBest, leadSuit, trump, low = false) {
+    return sortWeakestFirst(
+      cards.filter(card => cardBeats(card, currentBest.card, leadSuit, trump, low)),
+      low,
+    )[0] || null;
+  }
+
+  function shouldPullTrumpOnLead(hand, trump, remainingBySuit) {
+    if (!trump) return false;
+    const trumpCount = hand.filter(card => card.suit === trump).length;
+    if (trumpCount < 2) return false;
+    const unseenTrumpCount = remainingBySuit[trump]?.length || 0;
+    return unseenTrumpCount > 0 && trumpCount > unseenTrumpCount / 3;
+  }
+
   function bidGreaterThan(left, right) {
     if (!right) return true;
     if (left.level !== right.level) return left.level > right.level;
@@ -107,6 +150,7 @@
     const low = mode === 'low';
     let score = 0;
     const suitCards = hand.filter(card => card.suit === suit);
+    const offSuitCards = hand.filter(card => card.suit !== suit);
     for (const card of hand) {
       const highPoints = { A: 4.2, K: 3.1, Q: 2, J: 1, 10: 0.5 };
       const lowPoints = { A: 4.6, 2: 4.2, 3: 3.1, 4: 2, 5: 1, 6: 0.5 };
@@ -125,6 +169,9 @@
       else if (length === 1) score += 1.3;
       else if (length >= 5 && low) score += 0.7;
     }
+    const sureSideWinners = offSuitCards.filter(card =>
+      low ? ['2', '3'].includes(card.rank) : ['A', 'K'].includes(card.rank)).length;
+    score += sureSideWinners * 0.8;
     return score;
   }
 
@@ -156,19 +203,77 @@
         ? { ...candidates[0], level: Math.max(3, candidates[0].level) }
         : { ...candidates[0], level: Math.max(4, candidates[0].level) };
     }
+    if (!choice && currentBid) {
+      const best = candidates[0];
+      if (best && best.score >= 32 && currentBid.level < 5) {
+        choice = { level: currentBid.level + 1, mode: best.mode };
+        if (!bidGreaterThan(choice, currentBid)) choice = null;
+      }
+    }
     return choice ? { level: choice.level, mode: choice.mode } : { pass: true };
   }
 
-  function botPlay(seat, hand, trick, trump, low = false) {
-    const legal = legalCards(hand, trick).map(id => hand.find(card => card.id === id));
+  function botPlay(seat, hand, trick, trump, low = false, context = {}) {
+    const legal = legalCards(hand, trick).map(id => hand.find(card => card.id === id)).filter(Boolean);
     if (!legal.length) return null;
-    const sorted = [...legal].sort((left, right) =>
-      low ? cardValue(right, true) - cardValue(left, true) : cardValue(left) - cardValue(right));
-    if (!trick.length) return sorted[0];
-    const currentWinner = winningPlay(trick, trump, low);
-    if (TEAM[currentWinner.seat] === TEAM[seat]) return sorted[0];
+    const playedCards = context.playedCards || [];
+    const remainingBySuit = remainingCardsBySuit(hand, trick, playedCards);
+    const declarerTeam = context.contract?.team || null;
+    const botTeam = TEAM[seat];
+    const isDeclarerSide = declarerTeam === botTeam;
+    const nonTrump = legal.filter(card => card.suit !== trump);
+    const weakestLegal = chooseCheapest(nonTrump.length ? nonTrump : legal, low);
+
+    if (!trick.length) {
+      const trumpCards = legal.filter(card => card.suit === trump);
+      if (isDeclarerSide && trumpCards.length && shouldPullTrumpOnLead(hand, trump, remainingBySuit)) {
+        return sortStrongestFirst(trumpCards, low)[0];
+      }
+      const bossCards = legal.filter(card => card.suit !== trump && isLikelyBoss(card, remainingBySuit, low));
+      if (bossCards.length) return sortStrongestFirst(bossCards, low)[0];
+      const leadGroup = SUITS.map(suit => {
+        const cards = legal.filter(card => card.suit === suit);
+        const handSuitLength = hand.filter(card => card.suit === suit).length;
+        const strongest = sortStrongestFirst(cards, low)[0];
+        const bossCount = cards.filter(card => isLikelyBoss(card, remainingBySuit, low)).length;
+        const trumpPenalty = suit === trump ? 2.5 : 0;
+        const shortSuitBonus = !isDeclarerSide && suit !== trump && handSuitLength <= 2 ? 1.2 : 0;
+        const score = cards.length + bossCount * 2 + shortSuitBonus - trumpPenalty +
+          (strongest ? cardValue(strongest, low) / 20 : 0);
+        return { cards, score };
+      }).filter(group => group.cards.length).sort((left, right) => right.score - left.score)[0];
+      if (!leadGroup) return weakestLegal;
+      const bosses = leadGroup.cards.filter(card => isLikelyBoss(card, remainingBySuit, low));
+      if (bosses.length) return sortStrongestFirst(bosses, low)[0];
+      return sortWeakestFirst(leadGroup.cards, low)[Math.min(1, leadGroup.cards.length - 1)];
+    }
+
     const leadSuit = trick[0].card.suit;
-    return sorted.find(card => cardBeats(card, currentWinner.card, leadSuit, trump, low)) || sorted[0];
+    const currentWinner = winningPlay(trick, trump, low);
+    const partnerWinning = currentWinner && TEAM[currentWinner.seat] === botTeam;
+    const lastToAct = trick.length === 3;
+    const followsSuit = legal.some(card => card.suit === leadSuit);
+
+    if (partnerWinning) {
+      const safeDiscards = nonTrump.length ? nonTrump : legal;
+      const expendable = safeDiscards.filter(card => !isLikelyBoss(card, remainingBySuit, low));
+      if (!lastToAct && expendable.length) return chooseCheapest(expendable, low);
+      return chooseCheapest(safeDiscards, low);
+    }
+    if (followsSuit) {
+      const sameSuit = legal.filter(card => card.suit === leadSuit);
+      return chooseCheapestWinner(sameSuit, currentWinner, leadSuit, trump, low) ||
+        chooseCheapest(sameSuit, low);
+    }
+    const trumpCards = legal.filter(card => card.suit === trump);
+    if (trumpCards.length) {
+      const trumpWinner = chooseCheapestWinner(trumpCards, currentWinner, leadSuit, trump, low);
+      const needToFight = isDeclarerSide || lastToAct || trick.some(play => TEAM[play.seat] === botTeam);
+      if (trumpWinner && needToFight) return trumpWinner;
+    }
+    const discardPool = nonTrump.length ? nonTrump : legal;
+    const expendable = discardPool.filter(card => !isLikelyBoss(card, remainingBySuit, low));
+    return chooseCheapest(expendable.length ? expendable : discardPool, low);
   }
 
   function drawFirstDealer(rng = Math.random) {
@@ -516,7 +621,11 @@
     if (timer.type === 'bot_kitty') return { state: scheduleAutomation(completeBotKitty(state, now), now) };
     if (timer.type === 'bot_play') {
       const seat = state.turn;
-      const card = botPlay(seat, state.hands[seat], state.trickPlays, state.trump, state.contract?.mode === 'low');
+      const card = botPlay(seat, state.hands[seat], state.trickPlays, state.trump, state.contract?.mode === 'low', {
+        playedCards: state.playedCards,
+        contract: state.contract,
+        tricksWon: state.tricksWon,
+      });
       const result = playCard(state, seat, card?.id, now);
       if (result.error) return result;
       return { state: scheduleAutomation(result.state, now) };
@@ -619,12 +728,24 @@
 
   const engine = {
     SEATS,
+    NEXT,
+    TEAM,
     SUITS,
+    RANKS,
+    RANK_VALUE,
+    BID_SUITS,
     DELAYS,
     buildDeck,
+    shuffle,
+    sortHand,
     deal,
     legalCards,
+    trickWinner,
     bidGreaterThan,
+    canOpenBid,
+    evaluateHand,
+    botBid,
+    botPlay,
     createMatch,
     applyCommand,
     applyScheduled,

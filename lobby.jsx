@@ -22,12 +22,6 @@ function randomPlayerName() {
   return names[Math.floor(Math.random() * names.length)];
 }
 
-function chooseTrumpSuit(hand) {
-  return ALL_BID_SUITS
-    .map(suit => ({ suit, score: evaluateHand(hand, suit) }))
-    .sort((a, b) => b.score - a.score)[0].suit;
-}
-
 function StartScreen({ onStartLocal, onHostGame, onJoinGame, multiplayerError, multiplayerStatus }) {
   const [name, setName] = useState(() => window.localStorage.getItem('trumps_player_name') || randomPlayerName());
   const [roomCode, setRoomCode] = useState('');

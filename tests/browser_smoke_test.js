@@ -102,6 +102,16 @@ async function main() {
     await click(app, '.lobby-start');
     await waitFor(app, `document.querySelector('.topbar') && document.querySelector('.dealing-animation')`);
 
+    const localApp = await openPage(debugPort, `http://127.0.0.1:${serverPort}/trumps_table.html`);
+    await waitFor(localApp, `document.querySelector('#start-title')?.textContent === 'Choose a table'`);
+    await fill(localApp, '#start-player-name', 'Local Smoke Player');
+    await clickButtonByText(localApp, 'Play Local');
+    await waitFor(localApp, `document.querySelector('.topbar') && document.querySelector('.dealing-animation')`);
+    await waitFor(localApp, `
+      document.querySelector('.center-disc.bidding') &&
+      document.querySelector('.center-disc.bidding')?.textContent?.includes('Auction')
+    `);
+
     console.log(`browser smoke ok: room ${roomCode}, phase ${progressed.state.phase}, revision ${progressed.revision}`);
   } finally {
     await closeBrowser(browser);
