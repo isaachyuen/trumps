@@ -65,8 +65,11 @@ function useGameState() {
   const [localState, setLocalState] = useState(null);
   const [kittyDiscards, setKittyDiscards] = useState([]);
 
-  const isRemoteClient = isRemoteClientForGame(playMode, multiplayerRole);
-  const isHostClient = isHostClientForGame(playMode, multiplayerRole);
+  const effectiveMultiplayerRole = playMode === 'host'
+    ? (multiplayer.isHost ? 'host' : 'join')
+    : multiplayerRole;
+  const isRemoteClient = isRemoteClientForGame(playMode, effectiveMultiplayerRole);
+  const isHostClient = isHostClientForGame(playMode, effectiveMultiplayerRole);
   const gameState = normalizeGameState(isRemoteClient ? multiplayer.gameState : localState);
   const {
     phase,
@@ -241,7 +244,7 @@ function useGameState() {
   const viewPos = seat => pos(seat, mySeat);
 
   return {
-    multiplayer, playMode, multiplayerRole, playerName, mySeat, isRemoteClient, isHostClient,
+    multiplayer, playMode, multiplayerRole: effectiveMultiplayerRole, playerName, mySeat, isRemoteClient, isHostClient,
     phase, hands, kitty, kittyRevealed, kittyDiscards, trump, contract, bids, bidMode, bidTurn,
     trickPlays, playedCards, collecting, collectingSeat, turn, tricksWon, teamScore, handsWon, matchHands, round,
     toast, turnStart, dealer, dealerDraw, firstDealer, nextDealerByTeam, nextRoundDealer,

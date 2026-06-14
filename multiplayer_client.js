@@ -3,6 +3,7 @@ function useMultiplayerSession() {
   const [status, setStatus] = React.useState('offline');
   const [room, setRoom] = React.useState(null);
   const [seat, setSeat] = React.useState(null);
+  const [isHost, setIsHost] = React.useState(false);
   const [error, setError] = React.useState(null);
   const [gameState, setGameState] = React.useState(null);
   const [revision, setRevision] = React.useState(0);
@@ -21,7 +22,10 @@ function useMultiplayerSession() {
     socketRef.current = socket;
 
     socket.addEventListener('open', () => setStatus('connected'));
-    socket.addEventListener('close', () => setStatus('offline'));
+    socket.addEventListener('close', () => {
+      setStatus('offline');
+      setIsHost(false);
+    });
     socket.addEventListener('error', () => {
       setError('Multiplayer server unavailable');
       setStatus('offline');
@@ -31,6 +35,7 @@ function useMultiplayerSession() {
       if (message.type === protocol.serverEvents.ROOM_STATE) {
         setRoom(message.room);
         setSeat(message.seat);
+        setIsHost(Boolean(message.isHost));
         if (message.token) window.localStorage.setItem('trumps_player_token', message.token);
       } else if (message.type === protocol.serverEvents.GAME_STATE) {
         setGameState(message.state);
@@ -112,7 +117,7 @@ function useMultiplayerSession() {
   }, [protocol, sendGameCommand]);
 
   return {
-    status, room, seat, error, gameState, revision,
+    status, room, seat, isHost, error, gameState, revision,
     createRoom, joinRoom, chooseSeat, startMatch, submitBid, chooseTrump, discardKitty, playCard,
   };
 }
