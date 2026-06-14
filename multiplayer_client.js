@@ -5,8 +5,9 @@ function useMultiplayerSession() {
   const [seat, setSeat] = React.useState(null);
   const [error, setError] = React.useState(null);
   const [gameState, setGameState] = React.useState(null);
-  const [playerActions, setPlayerActions] = React.useState([]);
+  const [revision, setRevision] = React.useState(0);
   const socketRef = React.useRef(null);
+  const revisionRef = React.useRef(0);
 
   const connect = React.useCallback(() => {
     if (!protocol || socketRef.current?.readyState === WebSocket.OPEN || socketRef.current?.readyState === WebSocket.CONNECTING) {
@@ -33,8 +34,8 @@ function useMultiplayerSession() {
         if (message.token) window.localStorage.setItem('trumps_player_token', message.token);
       } else if (message.type === protocol.serverEvents.GAME_STATE) {
         setGameState(message.state);
-      } else if (message.type === protocol.serverEvents.PLAYER_ACTION) {
-        setPlayerActions(actions => [...actions, { seat: message.seat, action: message.action, id: Date.now() + Math.random() }]);
+        setRevision(message.revision || 0);
+        revisionRef.current = message.revision || 0;
       } else if (message.type === protocol.serverEvents.ERROR || message.type === protocol.serverEvents.INVALID_ACTION) {
         setError(message.message);
       }
@@ -80,23 +81,40 @@ function useMultiplayerSession() {
     });
   }, [protocol, send]);
 
-  const syncState = React.useCallback((state) => {
+  const sendGameCommand = React.useCallback((type, payload = {}) => {
+    const actionId = `${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 10)}`;
     send({
-      type: protocol.clientEvents.SYNC_STATE,
-      state,
+      type,
+      actionId,
+      expectedRevision: revisionRef.current,
+      ...payload,
     });
-  }, [protocol, send]);
+  }, [send]);
 
-  const sendPlayerAction = React.useCallback((action) => {
-    send({
-      type: protocol.clientEvents.PLAYER_ACTION,
-      action,
-    });
-  }, [protocol, send]);
+  const startMatch = React.useCallback((matchHands = 3) => {
+    sendGameCommand(protocol.clientEvents.START_MATCH, { matchHands });
+  }, [protocol, sendGameCommand]);
 
-  const clearPlayerActions = React.useCallback(() => setPlayerActions([]), []);
+  const submitBid = React.useCallback((bid) => {
+    sendGameCommand(protocol.clientEvents.SUBMIT_BID, { bid });
+  }, [protocol, sendGameCommand]);
 
-  return { status, room, seat, error, gameState, playerActions, clearPlayerActions, createRoom, joinRoom, chooseSeat, syncState, sendPlayerAction };
+  const chooseTrump = React.useCallback((suit) => {
+    sendGameCommand(protocol.clientEvents.CHOOSE_TRUMP, { suit });
+  }, [protocol, sendGameCommand]);
+
+  const discardKitty = React.useCallback((discards) => {
+    sendGameCommand(protocol.clientEvents.DISCARD_KITTY, { discards });
+  }, [protocol, sendGameCommand]);
+
+  const playCard = React.useCallback((cardId) => {
+    sendGameCommand(protocol.clientEvents.PLAY_CARD, { cardId });
+  }, [protocol, sendGameCommand]);
+
+  return {
+    status, room, seat, error, gameState, revision,
+    createRoom, joinRoom, chooseSeat, startMatch, submitBid, chooseTrump, discardKitty, playCard,
+  };
 }
 
 Object.assign(window, { useMultiplayerSession });

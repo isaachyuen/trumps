@@ -11,16 +11,13 @@
     CHOOSE_TRUMP: 'choose_trump',
     DISCARD_KITTY: 'discard_kitty',
     PLAY_CARD: 'play_card',
-    SYNC_STATE: 'sync_state',
-    PLAYER_ACTION: 'player_action',
   };
 
   const SERVER_EVENTS = {
     CONNECTED: 'connected',
     ROOM_STATE: 'room_state',
     GAME_STATE: 'game_state',
-    PRIVATE_HAND: 'private_hand',
-    PLAYER_ACTION: 'player_action',
+    ACTION_ACCEPTED: 'action_accepted',
     INVALID_ACTION: 'invalid_action',
     ERROR: 'error',
   };
@@ -41,7 +38,7 @@
   }
 
   const protocol = {
-    version: 1,
+    version: 2,
     seats: SEATS,
     clientEvents: CLIENT_EVENTS,
     serverEvents: SERVER_EVENTS,

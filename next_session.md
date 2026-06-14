@@ -1,205 +1,141 @@
-# Trumps v2 Next Session Notes
+# Trumps Next Session Handoff
 
-## How to Run
-
-Open `trumps_table.html` directly in a browser, or serve the folder:
+## Run
 
 ```powershell
-cd "C:\Users\isaac\trumps_v2"
-python -m http.server 8000
-```
-
-Then open `http://localhost:8000/trumps_table.html`.
-
-For the multiplayer server scaffold, install dependencies once and run the Node server:
-
-```powershell
-cd "C:\Users\isaac\trumps_v2"
+cd C:\projects\trumps
 npm install
 npm start
 ```
 
-The multiplayer server defaults to port `8001`, so open `http://localhost:8001/trumps_table.html` when running `npm start`. Other devices on the same Wi-Fi can use `http://<your-laptop-ip>:8001/trumps_table.html`.
+Open `http://localhost:8001/trumps_table.html`.
 
-The HTML uses cache-busting query strings for local JSX/CSS. If you change `app.jsx`, `game.jsx`, `card.jsx`, or `styles.css`, bump the corresponding `?v=` value in `trumps_table.html`.
+Other devices on the same LAN can use `http://<host-ip>:8001/trumps_table.html`.
+
+The frontend loads React and Babel from CDNs, so internet access is required unless those assets are already cached. After changing a browser-loaded script or stylesheet, bump its `?v=` query in `trumps_table.html`.
 
 ## File Map
 
-- `trumps_table.html`: static entry point, loads React/Babel from CDN and local JSX files.
-- `game.jsx`: pure game rules and bot helpers.
-- `app.jsx`: React state machine, bidding/play flow, match/dealer logic, UI components.
-- `card.jsx`: card face/back rendering and pip layouts.
-- `styles.css`: layout, card styling, animations, panels.
-- `tweaks_panel.jsx`: visual tweak UI.
-- `multiplayer_protocol.js`: shared client/server event names and room-code helpers.
-- `multiplayer_client.js`: browser WebSocket adapter and room lobby hook.
-- `server.js`: Node static file server plus WebSocket room scaffold.
+- `trumps_table.html`: static entry point and browser script loading order.
+- `app.jsx`: top-level screen routing and visual tweak integration.
+- `game_state.jsx`: React orchestration for local play and online state hydration.
+- `shared/game_engine.js`: server-authoritative multiplayer engine, validation, bots, timers, scoring, and private state projections.
+- `game.jsx`: local-play card rules and bot helpers.
+- `seat_helpers.js`: seat topology, names, teams, and viewer perspective.
+- `lobby.jsx`: start screen and multiplayer lobby.
+- `table.jsx`: game table and card-hand UI.
+- `panels.jsx`: bidding, trump, kitty, score, and action panels.
+- `card.jsx`: card rendering.
+- `styles.css`: application styling and animations.
+- `multiplayer_protocol.js`: protocol version, event names, seats, and room-code helpers.
+- `multiplayer_client.js`: browser WebSocket hook and explicit game commands.
+- `server.js`: static server, rooms, reconnect tokens, authoritative matches, revisions, and scheduling.
+- `tests/game_engine_test.js`: engine, validation, privacy, and bot-match tests.
+- `tests/browser_smoke_test.js`: WebSocket and real browser integration test.
 
-## Current Game Flow
+## User Flow
 
-Main phases in `app.jsx`:
+- Landing screen supports Play Local, Host Game, and Join by room code.
+- Host Game creates a lobby. The host and guests choose seats before the match starts.
+- The host cannot start until the host has a seat and no players remain unseated.
+- Empty seats become server-controlled bots.
+- Local play starts immediately with local bots.
+- Online play is server-authoritative for every participant, including the room host.
+
+## Multiplayer Architecture
+
+The Node server owns the canonical online match.
+
+- `server.js` owns rooms, seats, host identity, game revisions, accepted action IDs, and scheduled transitions.
+- `shared/game_engine.js` owns shuffle/deal, bidding, trump, kitty exchange, legal plays, trick resolution, scoring, dealer rotation, bots, and match progression.
+- Browsers send intent-only commands: `start_match`, `submit_bid`, `choose_trump`, `discard_kitty`, and `play_card`.
+- The server derives the acting seat from the connected player token and validates every command.
+- Commands include an `actionId` and `expectedRevision`. Stale actions are rejected and duplicate action IDs are ignored.
+- Each player receives a seat-specific `game_state` projection. A player sees their own cards, public game data, opponent card counts, and kitty contents only when entitled to view them.
+- Opponent hands are represented by hidden placeholder cards; complete hands are never broadcast to every client.
+- Bots and phase timers run on the server.
+- Match progression continues if the original host disconnects.
+- A reconnecting seated player can reclaim the seat with the token stored in browser `localStorage`.
+
+The host role is now limited to lobby ownership and starting a match. It does not grant authority over gameplay.
+
+## Game Flow
 
 ```text
 dealing -> bidding -> chooseTrump -> reveal -> kitty -> play -> roundEnd/matchEnd
 ```
 
-Important phase notes:
+Key rules:
 
-- `dealing`: animated deal before each hand. Real hands are hidden until bidding.
-- `bidding`: exactly one round; each player gets one call.
-- `chooseTrump`: only appears if South wins the bid. Bot winners auto-pick suit with `chooseTrumpSuit`.
-- `reveal`: shows final contract.
-- `kitty`: winning bidder takes kitty and discards 4.
-- `play`: trick play.
+- Bidding is one round.
+- Bids contain a level and High/Low mode. Trump is chosen after the auction.
+- Same-level Low beats High.
+- The contract target is `level + 5` tricks.
+- Trump beats non-trump in both High and Low contracts.
+- The first dealer is selected by high-card draw.
+- After each hand, the dealer comes from the losing team and alternates within that team.
+- If the first bidder wins the auction, that declarer previews the kitty before choosing trump.
+- Bot first-bidder declarers evaluate trump using their hand plus the kitty.
+- Match score is displayed from the viewer's perspective.
 
-## Bidding Rules
+## Deal Animation
 
-- Bids are number plus direction only: `1H`, `1L`, etc. Here `H/L` means High/Low, not suit.
-- Suits are not part of bidding.
-- Same-number Low beats High.
-- Same-number High does not beat Low.
-- Higher number beats lower number.
-- After winning the bid, the bidder chooses trump suit.
-- Opponent bid history intentionally does not show suit.
+- Implemented by `DealingAnimation` in `table.jsx`.
+- Cards originate from the dealer side and advance clockwise by visible table position.
+- The dealer is included in the dealing cycle.
+- Current local and server deal duration is 4300 ms.
 
-Core functions:
+Visual QA is still useful when changing animation timing or table perspective.
 
-- `bidGreaterThan` in `game.jsx`
-- `botBid` in `game.jsx`
-- `BiddingPanel` in `app.jsx`
-- `TrumpPicker` in `app.jsx`
+## Validation
 
-## Trick Rules
+Run:
 
-- `trickWinner(trick, trump, low)` in `game.jsx`
-- High contracts: higher rank wins within suit/trump.
-- Low contracts: lower rank wins within suit/trump.
-- Trump still outranks non-trump in both High and Low contracts.
-- Bot play receives `contract?.mode === 'low'`.
+```powershell
+npm.cmd run check
+npm.cmd test
+git diff --check
+```
 
-## Dealer Rules
+`npm.cmd run check` performs syntax checks and engine tests.
 
-- First dealer is chosen by high-card draw in `drawFirstDealer` in `app.jsx`.
-- Tied high-card draws redraw internally.
-- Actual deal starts with player left of dealer and proceeds clockwise.
-- `deal(firstSeat)` in `game.jsx` supports this.
-- After each hand, the next dealer comes from the losing team.
-- Losing team alternates between its two players.
+`npm.cmd test` verifies:
 
-Key helpers in `app.jsx`:
+- A complete 52-card deal with no duplicates.
+- Private hand and kitty projections.
+- Invalid turn and invalid bid rejection.
+- A complete server-driven bot match.
+- Room creation, joining, and seat selection.
+- Server-created match state and per-seat privacy.
+- Server progression after host disconnect.
+- Real HTML/Babel/React rendering through host, seat selection, and match start.
 
-- `drawFirstDealer`
-- `nextLosingTeamDealer`
-- `TEAM_PARTNERS`
-- `TEAM_FIRST_DEALER`
+The browser test requires access to the React and Babel CDNs used by `trumps_table.html`.
 
-## Match Rules
+## Remaining Risks
 
-- Player can choose best of 3, 5, or 7 hands in `ScoreCard`.
-- Hand wins are tracked separately from point score.
-- First to `ceil(bestOf / 2)` wins the match.
-- `New match` appears at match end.
+- Rooms and matches are in memory and disappear when the server restarts.
+- Reconnect tokens are prototype identifiers generated with `Math.random`, not secure authentication.
+- The host token remains required to start another match; there is no host transfer workflow.
+- Local play and online play use separate engines (`game.jsx`/`game_state.jsx` versus `shared/game_engine.js`), so rule changes must be kept aligned.
+- Server bot strategy is intentionally simpler than the existing local bot strategy.
+- There is no production persistence, account system, rate limiting, or deployment configuration.
+- Automated tests cover architecture and smoke behavior, but not every scoring, kitty, and reconnect edge case.
 
-## Card UI Notes
+## Next Priorities
 
-- Number card center pips are rendered by `PipGrid` in `card.jsx`.
-- Ace center suit uses `.center-suit`.
-- Face card center letter uses `.face-letter`.
-- Corner rank/suit sizing is in `styles.css` under `.card-face .rank` and `.card-face .corner-suit`.
-- Center pips are intentionally smaller than corner indices.
-- Clubs and spades remain black but have different glyph treatments for distinguishability.
+1. Add focused engine tests for full bidding order, kitty entitlement, following suit, scoring, dealer rotation, duplicate actions, and stale revisions.
+2. Consolidate local and online rules onto the shared engine to prevent behavior drift.
+3. Add room cleanup, reconnect expiry, and host transfer or host-independent rematch controls.
+4. Replace prototype reconnect tokens with cryptographically secure session identifiers before public deployment.
+5. Add persistent room or match storage only if restart recovery is required.
 
-## Animations And Layout
+## Git State
 
-- Dealing animation: `DealingAnimation` in `app.jsx`, styles at `.dealing-animation` / `.deal-card`.
-- Trick collection animation: `.trick-card.collecting.to-*` in `styles.css`.
-- Trick collection should animate toward the trick winner.
-- Status/action bar is positioned bottom-left to avoid blocking table cards.
+The checkout is based on:
 
-## Recent UX Decisions
+```text
+c8a8ded Merge pull request #1 from isaachyuen/codex-refactor-game-state-bots
+```
 
-- Bidding panel has High and Low columns, not a High/Low toggle.
-- Choose trump suit order matches hand sort order: `♠ ♥ ♣ ♦`.
-- Contract/HUD red suits should render red.
-- Toast from high-card draw clears when dealing finishes so it does not block bidding.
-
-## Online Multiplayer Plan
-
-Use a small authoritative server for online multiplayer. Clients should render state and request actions, but the server should own deck shuffle, deal, bidding turn, valid bid checks, trump selection, kitty exchange, legal card checks, trick resolution, scoring, and round/match progression.
-
-Recommended stack:
-
-- Frontend: current static React/Babel app initially; consider moving to Vite later.
-- Backend: Node.js WebSocket server.
-- Transport: `socket.io` or native WebSocket.
-- Hosting: Render, Fly.io, or Railway for the server; GitHub Pages, Netlify, or Vercel for the frontend.
-- State: in-memory rooms first; database later for accounts, match history, or persistence.
-
-Implementation sequence:
-
-1. Extract core game state and rules from React state into shared game-engine functions.
-2. Create modules such as `game_state.js`, `game_rules.js`, `game_actions.js`, and `bot_players.js`.
-3. Define WebSocket events: `create_room`, `join_room`, `start_match`, `submit_bid`, `choose_trump`, `discard_kitty`, `play_card`, and `leave_room`.
-4. Add server responses: `room_state`, `player_joined`, `game_state`, `private_hand`, `invalid_action`, and `toast` or `event_log`.
-5. Build a room system with 4 seats: South, West, North, East. Seats can be human or bot.
-6. Support 1 human plus 3 bots, 2 humans plus bots, and eventually 4 humans.
-7. Replace direct local UI calls like `playCard`, `submitBid`, and `startMatch` with an online `sendAction(...)` adapter.
-8. Keep an offline/local mode so the current game still works without a server.
-9. Add reconnect support with `roomId`, `seat`, and `playerToken` stored in `localStorage`.
-10. Run bots server-side with small delays when it is a bot's turn.
-11. Deploy the backend and configure the frontend with a server URL.
-
-Hidden information rules:
-
-- Public state can include phase, dealer, bids, contract, trump, trick plays, scores, seat occupancy, and opponent card counts.
-- Private state should include only the player's hand, kitty contents when allowed, and optionally server-computed legal cards.
-- Never send all hands to every client.
-
-Testing priorities:
-
-- Rule tests for legal cards, trick winner, and scoring.
-- Action reducer tests for invalid bids and invalid plays.
-- Room tests for join, leave, and reconnect.
-- Hidden-information tests proving players cannot see other hands.
-- Simulated 4-player full match test.
-
-Biggest engineering step: separate game rules from `app.jsx`. Once rules are server-runnable, online multiplayer is mostly room management plus WebSocket syncing.
-
-## Multiplayer Scaffold Completed
-
-Completed in the first multiplayer pass:
-
-- Added `package.json` and `package-lock.json`.
-- Installed the `ws` WebSocket dependency.
-- Added `.gitignore` for `node_modules/`, npm debug logs, and local server logs.
-- Added `server.js`, which serves the static app and exposes WebSocket endpoint `/ws`.
-- Added `multiplayer_protocol.js` for shared event names, seat constants, room-code normalization, and room-code generation.
-- Added `multiplayer_client.js` with `useMultiplayerSession`, local reconnect token storage, and Host/Join helpers.
-- Loaded multiplayer scripts from `trumps_table.html` and bumped `app.jsx` cache version to `v=44`.
-- Added compact Host/Join room controls to `TopBar` in `app.jsx`.
-- Added `.online-room` top-bar styling in `styles.css`.
-- Set the multiplayer server default port to `8001` so it can coexist with any existing Python static server on `8000`.
-
-Verified:
-
-- `npm run check` passes.
-- `node --check server.js` passes.
-- `node --check multiplayer_protocol.js` passes.
-- `node --check multiplayer_client.js` passes.
-- `http://localhost:8001/trumps_table.html` returns HTTP 200 when the server is running.
-- WebSocket smoke test against `ws://localhost:8001/ws` can create a room and receive `room_state`.
-
-Current limitation:
-
-- Multiplayer is not wired into gameplay yet. The scaffold supports hosting/joining rooms and socket messages, but the card game still runs locally in `app.jsx`.
-
-Next implementation step:
-
-- Extract authoritative match/round/game action state from `app.jsx` into server-runnable modules, then have the client send bid/play/trump/discard actions over WebSocket instead of mutating local game state directly.
-
-## Cautions
-
-- This is a static Babel-in-browser app. There is no build step or test suite.
-- Browser CDN dependencies mean offline loading may fail unless cached.
-- Several files contain suit symbols; PowerShell output may show mojibake, but the source bytes are UTF-8.
-- Prefer small scoped edits and bump cache query strings after changes.
+The server-authoritative multiplayer implementation and this handoff update are currently local changes. Check `git status -sb` before publishing.

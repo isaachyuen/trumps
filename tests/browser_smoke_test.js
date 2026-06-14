@@ -54,63 +54,59 @@ async function main() {
       window.smoke.latest('room_state')?.room?.hostSeat === 'S'
     `);
 
-    const hostState = makeStartedMatchState();
     await sendClient(host, {
-      type: 'sync_state',
-      state: hostState,
+      type: 'start_match',
+      actionId: 'start-smoke-match',
+      expectedRevision: 0,
+      matchHands: 3,
     });
-    await waitFor(guest, `
-      JSON.stringify(window.smoke.latest('game_state')?.state) === ${JSON.stringify(JSON.stringify(hostState))}
-    `);
-
+    await waitFor(host, `window.smoke.latest('game_state')?.revision >= 1`);
+    await waitFor(guest, `window.smoke.latest('game_state')?.revision >= 1`);
+    const revisionBeforeDisconnect = await evalValue(guest, `window.smoke.latest('game_state').revision`);
+    const hostState = await evalValue(host, `window.smoke.latest('game_state').state`);
     const guestState = await evalValue(guest, `window.smoke.latest('game_state').state`);
 
-    assert.deepStrictEqual(guestState, hostState);
     assert.strictEqual(hostState.round, 1);
     assert.strictEqual(hostState.matchHands, 3);
-    assert.ok(hostState.hands.S.length > 0, 'host state includes dealt hands');
-    assert.ok(hostState.hands.W.length > 0, 'guest seat hand is included in synchronized state');
+    assert.strictEqual(hostState.hands.S.length, 12);
+    assert.strictEqual(guestState.hands.W.length, 12);
+    assert.ok(hostState.hands.S.every(card => !card.hidden), 'host receives its private hand');
+    assert.ok(hostState.hands.W.every(card => card.hidden), 'host cannot see guest hand');
+    assert.ok(guestState.hands.W.every(card => !card.hidden), 'guest receives its private hand');
+    assert.ok(guestState.hands.S.every(card => card.hidden), 'guest cannot see host hand');
+    assert.ok(hostState.kitty.every(card => card.hidden), 'kitty is hidden before entitlement');
+    assert.notDeepStrictEqual(guestState, hostState);
 
-    console.log(`browser smoke ok: room ${roomCode}, phase ${hostState.phase}, dealer ${hostState.dealer}`);
+    await evalValue(host, `window.smoke.ws.close()`);
+    await waitFor(guest, `
+      window.smoke.latest('game_state')?.revision > ${revisionBeforeDisconnect}
+    `);
+    const progressed = await evalValue(guest, `window.smoke.latest('game_state')`);
+    assert.ok(progressed.revision > 1, 'server advances state after host disconnect');
+
+    const app = await openPage(debugPort, `http://127.0.0.1:${serverPort}/trumps_table.html`);
+    await delay(3000);
+    const appDiagnostic = await evalValue(app, `({
+      hasStart: document.querySelector('#start-title')?.textContent === 'Choose a table',
+      rootHtml: document.querySelector('#root')?.innerHTML || '',
+      reactType: typeof window.React,
+      babelType: typeof window.Babel,
+      title: document.title
+    })`);
+    assert.ok(appDiagnostic.hasStart, `app failed to render: ${JSON.stringify(appDiagnostic)}`);
+    await fill(app, '#start-player-name', 'UI Smoke Host');
+    await clickButtonByText(app, 'Host Game');
+    await waitFor(app, `document.querySelector('.lobby-code b')?.textContent?.length === 5`);
+    await click(app, 'button[aria-label="Choose seat S"]');
+    await waitFor(app, `document.querySelector('.lobby-start') && !document.querySelector('.lobby-start').disabled`);
+    await click(app, '.lobby-start');
+    await waitFor(app, `document.querySelector('.topbar') && document.querySelector('.dealing-animation')`);
+
+    console.log(`browser smoke ok: room ${roomCode}, phase ${progressed.state.phase}, revision ${progressed.revision}`);
   } finally {
     await closeBrowser(browser);
     server.kill();
   }
-}
-
-function makeStartedMatchState() {
-  return {
-    phase: 'dealing',
-    hands: {
-      S: [{ suit: '♠', rank: 'A', id: 'A♠' }],
-      W: [{ suit: '♥', rank: 'K', id: 'K♥' }],
-      N: [{ suit: '♣', rank: 'Q', id: 'Q♣' }],
-      E: [{ suit: '♦', rank: 'J', id: 'J♦' }],
-    },
-    kitty: [{ suit: '♠', rank: '2', id: '2♠' }],
-    kittyRevealed: false,
-    trump: null,
-    contract: null,
-    bids: [],
-    bidMode: 'high',
-    bidTurn: 'W',
-    trickPlays: [],
-    collecting: false,
-    collectingSeat: null,
-    turn: 'W',
-    tricksWon: { S: 0, W: 0, N: 0, E: 0 },
-    teamScore: { A: 0, B: 0 },
-    handsWon: { A: 0, B: 0 },
-    matchHands: 3,
-    round: 1,
-    turnStart: 123456789,
-    dealer: 'S',
-    dealerDraw: null,
-    firstDealer: 'S',
-    nextDealerByTeam: { A: 'N', B: 'W' },
-    nextRoundDealer: null,
-    toast: 'High-card draw: Smoke Host deals first',
-  };
 }
 
 function getFreePort() {
@@ -128,7 +124,7 @@ function startServer(port) {
   return new Promise((resolve, reject) => {
     const server = childProcess.spawn(process.execPath, ['server.js'], {
       cwd: ROOT,
-      env: { ...process.env, HOST: '127.0.0.1', PORT: String(port) },
+      env: { ...process.env, HOST: '127.0.0.1', PORT: String(port), TRUMPS_TIMER_SCALE: '0.1' },
       stdio: ['ignore', 'pipe', 'pipe'],
     });
     const timer = setTimeout(() => {
