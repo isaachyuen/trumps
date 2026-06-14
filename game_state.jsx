@@ -560,6 +560,10 @@ function useGameState() {
   const seatNames = seatNamesForGame({ mySeat, playerName, room: multiplayer.room });
 
   const startMatch = useCallback((handsToPlay = matchHands) => {
+    if (playMode === 'host') {
+      multiplayer.startMatch(handsToPlay);
+      return;
+    }
     const opening = drawFirstDealer();
     dispatch({
       type: 'START_MATCH',
@@ -568,7 +572,7 @@ function useGameState() {
       dealt: deal(NEXT[opening.dealer]),
       toast: `High-card draw: ${getSeatName(opening.dealer)} ${opening.dealer === mySeat ? 'deal' : 'deals'} first`,
     });
-  }, [matchHands, mySeat, getSeatName]);
+  }, [matchHands, mySeat, getSeatName, playMode, multiplayer.startMatch]);
 
   const startLocalGame = useCallback((name) => {
     const playerName = cleanPlayerName(name);
@@ -639,7 +643,7 @@ function useGameState() {
   const onPlayMine = (card) => {
     if (!isMyTurn || !legalIds.includes(card.id)) return;
     if (isRemoteClient) {
-      multiplayer.sendPlayerAction({ type: 'play_card', cardId: card.id });
+      multiplayer.playCard(card.id);
       return;
     }
     applyPlay(mySeat, card.id);
@@ -648,7 +652,7 @@ function useGameState() {
   const onMyBid = (bid) => {
     if (phase !== 'bidding' || bidTurn !== mySeat) return;
     if (isRemoteClient) {
-      multiplayer.sendPlayerAction({ type: 'submit_bid', bid });
+      multiplayer.submitBid(bid);
       return;
     }
     applyBid(mySeat, bid);
@@ -657,7 +661,7 @@ function useGameState() {
   const onChooseTrump = (suit) => {
     if (phase !== 'chooseTrump' || !contract || contract.declarer !== mySeat) return;
     if (isRemoteClient) {
-      multiplayer.sendPlayerAction({ type: 'choose_trump', suit });
+      multiplayer.chooseTrump(suit);
       return;
     }
     applyTrump(mySeat, suit);
@@ -705,23 +709,11 @@ function useGameState() {
   const confirmKittyDiscard = () => {
     if (kittyDiscards.length !== 4) return;
     if (isRemoteClient) {
-      multiplayer.sendPlayerAction({ type: 'discard_kitty', discards: kittyDiscards });
+      multiplayer.discardKitty(kittyDiscards);
       return;
     }
     applyKittyDiscard(mySeat, kittyDiscards);
   };
-
-  useEffect(() => {
-    if (!isHostClient || multiplayer.playerActions.length === 0) return;
-    for (const message of multiplayer.playerActions) {
-      const action = message.action || {};
-      if (action.type === 'submit_bid') applyBid(message.seat, action.bid);
-      else if (action.type === 'choose_trump') applyTrump(message.seat, action.suit);
-      else if (action.type === 'play_card') applyPlay(message.seat, action.cardId);
-      else if (action.type === 'discard_kitty') applyKittyDiscard(message.seat, action.discards || []);
-    }
-    multiplayer.clearPlayerActions();
-  }, [isHostClient, multiplayer.playerActions, multiplayer.clearPlayerActions, applyBid, applyTrump, applyPlay, applyKittyDiscard]);
 
   const teamA_tricks = tricksWon.S + tricksWon.N;
   const teamB_tricks = tricksWon.W + tricksWon.E;
@@ -737,45 +729,6 @@ function useGameState() {
     if (isRemoteClient) return;
     startMatch(handsToPlay);
   };
-
-  const gameSnapshot = {
-    phase,
-    hands,
-    kitty,
-    kittyRevealed,
-    trump,
-    contract,
-    bids,
-    bidMode,
-    bidTurn,
-    trickPlays,
-    playedCards,
-    collecting,
-    collectingSeat,
-    turn,
-    tricksWon,
-    teamScore,
-    handsWon,
-    matchHands,
-    round,
-    turnStart,
-    dealer,
-    dealerDraw,
-    firstDealer,
-    nextDealerByTeam,
-    nextRoundDealer,
-    toast,
-  };
-
-  useEffect(() => {
-    if (playMode !== 'host' || !isHostClient || !multiplayer.room || !hands) return;
-    multiplayer.syncState(gameSnapshot);
-  }, [
-    playMode, isHostClient, multiplayer.room, multiplayer.syncState, hands, phase, kitty, kittyRevealed, trump,
-    contract, bids, bidMode, bidTurn, trickPlays, playedCards, collecting, collectingSeat,
-    turn, tricksWon, teamScore, handsWon, matchHands, round, turnStart, dealer,
-    dealerDraw, firstDealer, nextDealerByTeam, nextRoundDealer, toast,
-  ]);
 
   useEffect(() => {
     if (!isRemoteClient || !multiplayer.gameState) return;

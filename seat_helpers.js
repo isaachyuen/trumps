@@ -36,11 +36,11 @@ function getMySeat(playMode, multiplayer = {}) {
 }
 
 function isRemoteClientForGame(playMode, multiplayerRole) {
-  return playMode === 'host' && multiplayerRole === 'join';
+  return playMode === 'host';
 }
 
 function isHostClientForGame(playMode, multiplayerRole) {
-  return playMode !== 'host' || multiplayerRole !== 'join';
+  return playMode !== 'host';
 }
 
 function isHumanSeatForGame(nextSeat, { playMode, room } = {}) {

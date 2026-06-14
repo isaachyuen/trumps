@@ -3,9 +3,11 @@ const http = require('http');
 const path = require('path');
 const { WebSocketServer } = require('ws');
 const protocol = require('./multiplayer_protocol');
+const gameEngine = require('./shared/game_engine');
 
 const PORT = Number(process.env.PORT || 8001);
 const HOST = process.env.HOST || '0.0.0.0';
+const TIMER_SCALE = Math.max(0, Number(process.env.TRUMPS_TIMER_SCALE || 1));
 const ROOT = __dirname;
 
 const contentTypes = {
@@ -24,10 +26,15 @@ function send(ws, type, payload = {}) {
   ws.send(JSON.stringify({ type, ...payload }));
 }
 
+function roomPlayers(room) {
+  return [...Object.values(room.seats), ...room.waiting].filter(Boolean);
+}
+
 function publicRoom(room) {
   return {
     code: room.code,
     hostSeat: room.hostSeat,
+    matchActive: Boolean(room.gameState),
     seats: Object.fromEntries(protocol.seats.map(seat => {
       const player = room.seats[seat];
       return [seat, player ? { occupied: true, name: player.name, connected: player.connected } : null];
@@ -38,20 +45,28 @@ function publicRoom(room) {
 }
 
 function broadcastRoom(room) {
-  for (const player of [...Object.values(room.seats), ...room.waiting]) {
-    if (player?.socket) send(player.socket, protocol.serverEvents.ROOM_STATE, { room: publicRoom(room), seat: player.seat, token: player.token });
+  for (const player of roomPlayers(room)) {
+    if (player.socket) {
+      send(player.socket, protocol.serverEvents.ROOM_STATE, {
+        room: publicRoom(room),
+        seat: player.seat,
+        token: player.token,
+      });
+    }
   }
 }
 
-function broadcastGameState(room) {
+function broadcastGameState(room, acceptedActionId = null) {
   if (!room.gameState) return;
-  for (const player of [...Object.values(room.seats), ...room.waiting]) {
-    if (player?.socket) {
-      send(player.socket, protocol.serverEvents.GAME_STATE, {
-        state: room.gameState,
-        updatedAt: room.updatedAt,
-      });
-    }
+  for (const player of roomPlayers(room)) {
+    if (!player.socket) continue;
+    send(player.socket, protocol.serverEvents.GAME_STATE, {
+      state: gameEngine.projectState(room.gameState, player.seat),
+      revision: room.revision,
+      serverTime: Date.now(),
+      turnDeadline: room.gameState.pendingTimer?.dueAt || null,
+      acceptedActionId,
+    });
   }
 }
 
@@ -60,7 +75,6 @@ function createRoom() {
   do {
     code = protocol.makeRoomCode();
   } while (rooms.has(code));
-
   const room = {
     code,
     seats: { S: null, W: null, N: null, E: null },
@@ -69,7 +83,9 @@ function createRoom() {
     waiting: [],
     createdAt: Date.now(),
     gameState: null,
-    updatedAt: null,
+    revision: 0,
+    timer: null,
+    actionIds: new Set(),
   };
   rooms.set(code, room);
   return room;
@@ -84,18 +100,20 @@ function firstOpenSeat(room, preferredSeat) {
   return protocol.seats.find(seat => !room.seats[seat]) || null;
 }
 
+function cryptoToken() {
+  return `${Date.now().toString(36)}${Math.random().toString(36).slice(2, 10)}`;
+}
+
 function joinRoom(ws, room, payload) {
   const reconnectToken = String(payload.token || '');
-  const reconnect = protocol.seats
-    .map(seat => room.seats[seat])
-    .find(player => player?.token === reconnectToken);
-
+  const reconnect = roomPlayers(room).find(player => player.token === reconnectToken);
   if (reconnect) {
     reconnect.socket = ws;
     reconnect.connected = true;
     ws.player = reconnect;
     ws.room = room;
     broadcastRoom(room);
+    if (room.gameState) broadcastGameState(room);
     return;
   }
 
@@ -112,12 +130,7 @@ function joinRoom(ws, room, payload) {
     ws.player = player;
     ws.room = room;
     broadcastRoom(room);
-    broadcastGameState(room);
-    return;
-  }
-
-  if (protocol.isSeat(payload.seat) && room.seats[payload.seat]) {
-    send(ws, protocol.serverEvents.ERROR, { message: 'Seat is already taken.' });
+    if (room.gameState) broadcastGameState(room);
     return;
   }
 
@@ -126,20 +139,18 @@ function joinRoom(ws, room, payload) {
     send(ws, protocol.serverEvents.ERROR, { message: 'Room is full.' });
     return;
   }
-
   const player = {
     seat,
     name: String(payload.name || `Player ${seat}`).slice(0, 24),
-    token: cryptoToken(),
+    token: reconnectToken || cryptoToken(),
     socket: ws,
     connected: true,
   };
   room.seats[seat] = player;
-  if (room.hostToken === player.token) room.hostSeat = seat;
   ws.player = player;
   ws.room = room;
   broadcastRoom(room);
-  broadcastGameState(room);
+  if (room.gameState) broadcastGameState(room);
 }
 
 function chooseSeat(ws, payload) {
@@ -150,12 +161,16 @@ function chooseSeat(ws, payload) {
     send(ws, protocol.serverEvents.INVALID_ACTION, { message: 'Join a room before choosing a seat.' });
     return;
   }
+  if (room.gameState) {
+    send(ws, protocol.serverEvents.INVALID_ACTION, { message: 'Seats are locked after the match starts.' });
+    return;
+  }
   if (!protocol.isSeat(seat)) {
-    send(ws, protocol.serverEvents.ERROR, { message: 'Choose a valid seat.' });
+    send(ws, protocol.serverEvents.INVALID_ACTION, { message: 'Choose a valid seat.' });
     return;
   }
   if (room.seats[seat] && room.seats[seat] !== player) {
-    send(ws, protocol.serverEvents.ERROR, { message: 'Seat is already taken.' });
+    send(ws, protocol.serverEvents.INVALID_ACTION, { message: 'Seat is already taken.' });
     return;
   }
   if (player.seat && room.seats[player.seat] === player) room.seats[player.seat] = null;
@@ -165,11 +180,117 @@ function chooseSeat(ws, payload) {
   room.seats[seat] = player;
   if (room.hostToken === player.token) room.hostSeat = seat;
   broadcastRoom(room);
-  broadcastGameState(room);
 }
 
-function cryptoToken() {
-  return `${Date.now().toString(36)}${Math.random().toString(36).slice(2, 10)}`;
+function rememberAction(room, actionId) {
+  if (!actionId) return;
+  room.actionIds.add(actionId);
+  if (room.actionIds.size > 500) room.actionIds.delete(room.actionIds.values().next().value);
+}
+
+function commitGameState(room, state, acceptedActionId = null) {
+  room.gameState = state;
+  room.revision += 1;
+  rememberAction(room, acceptedActionId);
+  broadcastRoom(room);
+  broadcastGameState(room, acceptedActionId);
+  scheduleRoom(room);
+}
+
+function scheduleRoom(room) {
+  if (room.timer) {
+    clearTimeout(room.timer);
+    room.timer = null;
+  }
+  const pending = room.gameState?.pendingTimer;
+  if (!pending) return;
+  const timerKey = `${pending.type}:${pending.dueAt}`;
+  const delay = Math.max(0, pending.delay * TIMER_SCALE);
+  room.timer = setTimeout(() => {
+    room.timer = null;
+    const current = room.gameState?.pendingTimer;
+    if (!current || `${current.type}:${current.dueAt}` !== timerKey) return;
+    const result = gameEngine.applyScheduled(room.gameState, { now: Date.now() });
+    if (result.error) {
+      console.error(`Room ${room.code} timer failed: ${result.error}`);
+      return;
+    }
+    commitGameState(room, result.state);
+  }, delay);
+}
+
+function startMatch(ws, message) {
+  const room = ws.room;
+  const player = ws.player;
+  if (!room || !player || player.token !== room.hostToken) {
+    send(ws, protocol.serverEvents.INVALID_ACTION, { message: 'Only the room host can start the match.', actionId: message.actionId });
+    return;
+  }
+  if (!player.seat) {
+    send(ws, protocol.serverEvents.INVALID_ACTION, { message: 'Choose a seat before starting.', actionId: message.actionId });
+    return;
+  }
+  if (room.waiting.length) {
+    send(ws, protocol.serverEvents.INVALID_ACTION, { message: 'All waiting players must choose seats.', actionId: message.actionId });
+    return;
+  }
+  if (room.gameState && room.gameState.phase !== 'matchEnd') {
+    send(ws, protocol.serverEvents.INVALID_ACTION, { message: 'A match is already active.', actionId: message.actionId });
+    return;
+  }
+  const humanSeats = protocol.seats.filter(seat => room.seats[seat]);
+  const seatNames = Object.fromEntries(protocol.seats.map(seat => [
+    seat,
+    room.seats[seat]?.name || seat,
+  ]));
+  const state = gameEngine.createMatch({
+    matchHands: Number(message.matchHands),
+    humanSeats,
+    seatNames,
+    now: Date.now(),
+  });
+  commitGameState(room, state, message.actionId);
+}
+
+function handleGameCommand(ws, message) {
+  const room = ws.room;
+  const player = ws.player;
+  if (!room || !player?.seat) {
+    send(ws, protocol.serverEvents.INVALID_ACTION, { message: 'Join a seat before sending game actions.', actionId: message.actionId });
+    return;
+  }
+  if (!room.gameState) {
+    send(ws, protocol.serverEvents.INVALID_ACTION, { message: 'No match is active.', actionId: message.actionId });
+    return;
+  }
+  if (message.actionId && room.actionIds.has(message.actionId)) {
+    send(ws, protocol.serverEvents.ACTION_ACCEPTED, { actionId: message.actionId, revision: room.revision, duplicate: true });
+    return;
+  }
+  if (Number.isInteger(message.expectedRevision) && message.expectedRevision !== room.revision) {
+    send(ws, protocol.serverEvents.INVALID_ACTION, {
+      message: 'Game state changed. Retry from the latest state.',
+      actionId: message.actionId,
+      revision: room.revision,
+    });
+    broadcastGameState(room);
+    return;
+  }
+  const command = {
+    type: message.type,
+    bid: message.bid,
+    suit: message.suit,
+    discards: message.discards,
+    cardId: message.cardId,
+  };
+  const result = gameEngine.applyCommand(room.gameState, player.seat, command, { now: Date.now() });
+  if (result.error) {
+    send(ws, protocol.serverEvents.INVALID_ACTION, { message: result.error, actionId: message.actionId, revision: room.revision });
+    return;
+  }
+  const state = gameEngine.scheduleAutomation(result.state, Date.now());
+  send(ws, protocol.serverEvents.ACTION_ACCEPTED, { actionId: message.actionId, revision: room.revision + 1 });
+  commitGameState(room, state, message.actionId);
 }
 
 function handleMessage(ws, raw) {
@@ -192,10 +313,8 @@ function handleMessage(ws, raw) {
     }
     return;
   }
-
   if (message.type === protocol.clientEvents.JOIN_ROOM) {
-    const code = protocol.normalizeRoomCode(message.roomCode);
-    const room = rooms.get(code);
+    const room = rooms.get(protocol.normalizeRoomCode(message.roomCode));
     if (!room) {
       send(ws, protocol.serverEvents.ERROR, { message: 'Room not found.' });
       return;
@@ -204,47 +323,24 @@ function handleMessage(ws, raw) {
     joinRoom(ws, room, message);
     return;
   }
-
   if (message.type === protocol.clientEvents.CHOOSE_SEAT) {
     chooseSeat(ws, message);
     return;
   }
-
-  if (message.type === protocol.clientEvents.SYNC_STATE) {
-    const room = ws.room;
-    const player = ws.player;
-    if (!room || !player || player.token !== room.hostToken) {
-      send(ws, protocol.serverEvents.INVALID_ACTION, { message: 'Only the host can sync game state.' });
-      return;
-    }
-    room.gameState = message.state || null;
-    room.updatedAt = Date.now();
-    broadcastGameState(room);
+  if (message.type === protocol.clientEvents.START_MATCH) {
+    startMatch(ws, message);
     return;
   }
-
-  if (message.type === protocol.clientEvents.PLAYER_ACTION) {
-    const room = ws.room;
-    const player = ws.player;
-    if (!room || !player) {
-      send(ws, protocol.serverEvents.INVALID_ACTION, { message: 'Join a room before sending game actions.' });
-      return;
-    }
-    const host = room.seats[room.hostSeat];
-    if (!host?.socket) {
-      send(ws, protocol.serverEvents.ERROR, { message: 'Host is not connected.' });
-      return;
-    }
-    send(host.socket, protocol.serverEvents.PLAYER_ACTION, {
-      seat: player.seat,
-      action: message.action,
-    });
+  if ([
+    protocol.clientEvents.SUBMIT_BID,
+    protocol.clientEvents.CHOOSE_TRUMP,
+    protocol.clientEvents.DISCARD_KITTY,
+    protocol.clientEvents.PLAY_CARD,
+  ].includes(message.type)) {
+    handleGameCommand(ws, message);
     return;
   }
-
-  send(ws, protocol.serverEvents.INVALID_ACTION, {
-    message: `${message.type || 'Unknown action'} is not wired to game state yet.`,
-  });
+  send(ws, protocol.serverEvents.INVALID_ACTION, { message: `Unknown action: ${message.type || 'missing type'}` });
 }
 
 function handleClose(ws) {
@@ -266,9 +362,8 @@ function serveStatic(req, res) {
     res.end('Forbidden');
     return;
   }
-
-  fs.readFile(filePath, (err, data) => {
-    if (err) {
+  fs.readFile(filePath, (error, data) => {
+    if (error) {
       res.writeHead(404);
       res.end('Not found');
       return;
@@ -288,12 +383,12 @@ wss.on('connection', ws => {
 });
 
 function listen(port, attemptsLeft = 10) {
-  server.once('error', err => {
-    if (err.code === 'EADDRINUSE' && attemptsLeft > 0) {
+  server.once('error', error => {
+    if (error.code === 'EADDRINUSE' && attemptsLeft > 0) {
       listen(port + 1, attemptsLeft - 1);
       return;
     }
-    console.error(err);
+    console.error(error);
     process.exit(1);
   });
   server.listen(port, HOST, () => {
