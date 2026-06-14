@@ -111,6 +111,10 @@ git diff --check
 - Room creation, joining, and seat selection.
 - Server-created match state and per-seat privacy.
 - Server progression after host disconnect.
+- Deterministic host transfer before and during a match.
+- Promoted-host controls in the real React lobby.
+- Abandoned-room expiry after the configured grace period.
+- Reconnect cancellation of pending room cleanup.
 - Real HTML/Babel/React rendering through host, seat selection, and match start.
 
 The browser test requires access to the React and Babel CDNs used by `trumps_table.html`.
@@ -119,22 +123,39 @@ The browser test requires access to the React and Babel CDNs used by `trumps_tab
 
 - Rooms and matches are in memory and disappear when the server restarts.
 - Reconnect tokens are prototype identifiers generated with `Math.random`, not secure authentication.
+- Disconnected seated players remain reserved indefinitely while at least one player keeps the room active.
+- A promoted host can start a match, but there is no explicit host-transfer control or host-independent rematch protocol.
 - There is no production persistence, account system, rate limiting, or deployment configuration.
 - Automated tests cover architecture and smoke behavior, but not every scoring, kitty, and reconnect edge case.
 
 ## Next Priorities
 
 1. Add focused engine tests for full bidding order, kitty entitlement, following suit, scoring, dealer rotation, duplicate actions, and stale revisions.
-2. Add reconnect expiry and host-independent rematch controls.
-3. Replace prototype reconnect tokens with cryptographically secure session identifiers before public deployment.
-4. Add persistent room or match storage only if restart recovery is required.
+2. Expire disconnected player reservations and reconnect tokens after a configurable grace period.
+3. Add host-independent rematch controls.
+4. Replace prototype reconnect tokens with cryptographically secure session identifiers before public deployment.
+5. Add persistent room or match storage only if restart recovery is required.
 
 ## Git State
 
-The checkout is based on:
+Current branch:
 
 ```text
-c8a8ded Merge pull request #1 from isaachyuen/codex-refactor-game-state-bots
+codex/server-authoritative-multiplayer
 ```
 
-The server-authoritative multiplayer implementation and this handoff update are currently local changes. Check `git status -sb` before publishing.
+Latest commits:
+
+```text
+c429d29 Add room cleanup and host transfer
+20fc4a9 Consolidate local and server game engines
+da66cb7 Make multiplayer server authoritative
+```
+
+Draft pull request:
+
+```text
+https://github.com/isaachyuen/trumps/pull/4
+```
+
+Check `git status -sb` and the pull request state before starting or publishing additional work.
