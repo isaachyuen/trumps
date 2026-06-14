@@ -65,6 +65,33 @@ function testValidatedCommands() {
   assert.strictEqual(accepted.state.bids.length, 1);
 }
 
+function testFollowingSuitValidation() {
+  const leadCard = { suit: '\u2665', rank: 'A', id: 'A\u2665' };
+  const followCard = { suit: '\u2665', rank: '2', id: '2\u2665' };
+  const offSuitCard = { suit: '\u2660', rank: 'A', id: 'A\u2660' };
+  const state = {
+    ...engine.createMatch({ humanSeats: engine.SEATS, rng: seededRandom(9), now: 3000 }),
+    phase: 'play',
+    contract: { level: 4, mode: 'high', suit: '\u2663', declarer: 'S', team: 'A' },
+    trump: '\u2663',
+    turn: 'W',
+    hands: {
+      S: [],
+      W: [followCard, offSuitCard],
+      N: [],
+      E: [],
+    },
+    trickPlays: [{ seat: 'S', card: leadCard }],
+    pendingTimer: null,
+  };
+  assert.match(
+    engine.applyCommand(state, 'W', { type: 'play_card', cardId: offSuitCard.id }, { now: 3001 }).error,
+    /follow suit/i,
+  );
+  const accepted = engine.applyCommand(state, 'W', { type: 'play_card', cardId: followCard.id }, { now: 3001 });
+  assert.ifError(accepted.error ? new Error(accepted.error) : null);
+}
+
 function testBotOnlyMatchCompletes() {
   const rng = seededRandom(11);
   let now = 5000;
@@ -80,5 +107,6 @@ function testBotOnlyMatchCompletes() {
 
 testDealAndProjectionPrivacy();
 testValidatedCommands();
+testFollowingSuitValidation();
 testBotOnlyMatchCompletes();
 console.log('game engine tests ok');

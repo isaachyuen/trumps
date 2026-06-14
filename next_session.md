@@ -18,9 +18,9 @@ The frontend loads React and Babel from CDNs, so internet access is required unl
 
 - `trumps_table.html`: static entry point and browser script loading order.
 - `app.jsx`: top-level screen routing and visual tweak integration.
-- `game_state.jsx`: React orchestration for local play and online state hydration.
+- `game_state.jsx`: thin React adapter for shared-engine local play and online state projections.
 - `shared/game_engine.js`: server-authoritative multiplayer engine, validation, bots, timers, scoring, and private state projections.
-- `game.jsx`: local-play card rules and bot helpers.
+- `game.jsx`: browser compatibility facade that exposes shared-engine helpers to the existing UI.
 - `seat_helpers.js`: seat topology, names, teams, and viewer perspective.
 - `lobby.jsx`: start screen and multiplayer lobby.
 - `table.jsx`: game table and card-hand UI.
@@ -39,7 +39,7 @@ The frontend loads React and Babel from CDNs, so internet access is required unl
 - Host Game creates a lobby. The host and guests choose seats before the match starts.
 - The host cannot start until the host has a seat and no players remain unseated.
 - Empty seats become server-controlled bots.
-- Local play starts immediately with local bots.
+- Local play starts immediately and runs the same shared engine with three bot seats.
 - Online play is server-authoritative for every participant, including the room host.
 
 ## Multiplayer Architecture
@@ -48,6 +48,7 @@ The Node server owns the canonical online match.
 
 - `server.js` owns rooms, seats, host identity, game revisions, accepted action IDs, and scheduled transitions.
 - `shared/game_engine.js` owns shuffle/deal, bidding, trump, kitty exchange, legal plays, trick resolution, scoring, dealer rotation, bots, and match progression.
+- Local play calls the same engine directly in the browser; online play calls it through the server.
 - Browsers send intent-only commands: `start_match`, `submit_bid`, `choose_trump`, `discard_kitty`, and `play_card`.
 - The server derives the acting seat from the connected player token and validates every command.
 - Commands include an `actionId` and `expectedRevision`. Stale actions are rejected and duplicate action IDs are ignored.
@@ -117,18 +118,15 @@ The browser test requires access to the React and Babel CDNs used by `trumps_tab
 - Rooms and matches are in memory and disappear when the server restarts.
 - Reconnect tokens are prototype identifiers generated with `Math.random`, not secure authentication.
 - The host token remains required to start another match; there is no host transfer workflow.
-- Local play and online play use separate engines (`game.jsx`/`game_state.jsx` versus `shared/game_engine.js`), so rule changes must be kept aligned.
-- Server bot strategy is intentionally simpler than the existing local bot strategy.
 - There is no production persistence, account system, rate limiting, or deployment configuration.
 - Automated tests cover architecture and smoke behavior, but not every scoring, kitty, and reconnect edge case.
 
 ## Next Priorities
 
 1. Add focused engine tests for full bidding order, kitty entitlement, following suit, scoring, dealer rotation, duplicate actions, and stale revisions.
-2. Consolidate local and online rules onto the shared engine to prevent behavior drift.
-3. Add room cleanup, reconnect expiry, and host transfer or host-independent rematch controls.
-4. Replace prototype reconnect tokens with cryptographically secure session identifiers before public deployment.
-5. Add persistent room or match storage only if restart recovery is required.
+2. Add room cleanup, reconnect expiry, and host transfer or host-independent rematch controls.
+3. Replace prototype reconnect tokens with cryptographically secure session identifiers before public deployment.
+4. Add persistent room or match storage only if restart recovery is required.
 
 ## Git State
 
